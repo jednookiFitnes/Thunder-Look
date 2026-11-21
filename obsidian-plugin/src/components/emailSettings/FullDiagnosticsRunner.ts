@@ -1,14 +1,17 @@
 import { Notice, Setting } from "obsidian";
-import { DiagnosticStepResult, FullDiagnosticsReport } from "../../types";
+import { DiagnosticStepResult, FullDiagnosticsReport, MailAccountConfig } from "../../types";
+import { getActiveAccount, syncActiveAccountToTopLevel } from "../../utils/settingsMigration";
 import { formatBytes } from "../../utils/textUtils";
 import type TrinitecMailPlugin from "../../main";
 
 export async function runFullConfigurationDiagnostics(
   plugin: TrinitecMailPlugin,
-  draftPassword: string
+  draftPassword: string,
+  account?: MailAccountConfig
 ): Promise<FullDiagnosticsReport> {
+  const acc = account ?? getActiveAccount(plugin.settings);
   const pwdToUse =
-    plugin.settings.mailProvider === "gmail" && draftPassword
+    acc.mailProvider === "gmail" && draftPassword
       ? draftPassword.replace(/\s+/g, "")
       : draftPassword || undefined;
 
@@ -16,17 +19,19 @@ export async function runFullConfigurationDiagnostics(
 
   // Krok A: Połączenie i logowanie IMAP + lista folderów
   const imapRes = await plugin.imapService.testConnection({
-    host: plugin.settings.imapHost,
-    port: plugin.settings.imapPort,
-    secure: plugin.settings.imapSecure,
-    user: plugin.settings.imapUser,
+    accountId: acc.id,
+    host: acc.imapHost,
+    port: acc.imapPort,
+    secure: acc.imapSecure,
+    user: acc.imapUser,
     password: pwdToUse,
-    strictTls: plugin.settings.strictTlsVerification,
-    authMethod: plugin.settings.mailAuthMethod,
+    strictTls: acc.strictTlsVerification,
+    authMethod: acc.mailAuthMethod,
   });
 
   if (imapRes.ok && imapRes.sentFolderDetected) {
-    plugin.settings.sentFolder = imapRes.sentFolderDetected;
+    acc.sentFolder = imapRes.sentFolderDetected;
+    syncActiveAccountToTopLevel(plugin.settings);
     await plugin.saveSettings();
   }
 
@@ -37,7 +42,7 @@ export async function runFullConfigurationDiagnostics(
 
   steps.push({
     step: "imap",
-    label: "1. Połączenie i logowanie IMAP + foldery",
+    label: `1. Połączenie i logowanie IMAP (${acc.label})`,
     ok: imapRes.ok,
     summary: imapRes.ok
       ? `Połączono z ${imapRes.host}:${imapRes.port} (${imapRes.latencyMs} ms) — ${imapRes.folderCount} folderów, INBOX: ${imapRes.inboxMessages} (${imapRes.inboxUnseen} nieprzecz.)${quotaInfo}`
@@ -50,13 +55,14 @@ export async function runFullConfigurationDiagnostics(
 
   // Krok B: Połączenie SMTP
   const smtpRes = await plugin.smtpService.verifyConnection({
-    host: plugin.settings.smtpHost,
-    port: plugin.settings.smtpPort,
-    secure: plugin.settings.smtpSecure,
-    user: plugin.settings.imapUser,
+    accountId: acc.id,
+    host: acc.smtpHost,
+    port: acc.smtpPort,
+    secure: acc.smtpSecure,
+    user: acc.imapUser,
     password: pwdToUse,
-    strictTls: plugin.settings.strictTlsVerification,
-    authMethod: plugin.settings.mailAuthMethod,
+    strictTls: acc.strictTlsVerification,
+    authMethod: acc.mailAuthMethod,
   });
 
   steps.push({
@@ -88,6 +94,7 @@ export async function runFullConfigurationDiagnostics(
 export function renderDiagnosticsPanel(params: {
   wrapper: HTMLElement;
   plugin: TrinitecMailPlugin;
+  account?: MailAccountConfig;
   getDraftPassword: () => string;
   isTesting: boolean;
   setIsTesting: (v: boolean) => void;
@@ -97,6 +104,7 @@ export function renderDiagnosticsPanel(params: {
   const {
     wrapper,
     plugin,
+    account,
     getDraftPassword,
     isTesting,
     setIsTesting,
@@ -104,12 +112,13 @@ export function renderDiagnosticsPanel(params: {
     setLastReport,
   } = params;
 
+  const acc = account ?? getActiveAccount(plugin.settings);
   const resultContainer = wrapper.createDiv({ cls: "tl-test-result-slot" });
 
   new Setting(wrapper)
     .setName("Szybka diagnostyka krok po kroku")
     .setDesc(
-      "Weryfikuje kolejno: (1) logowanie IMAP + foldery, (2) serwer SMTP oraz (3) zapisywalność folderu docelowego w Vaulcie."
+      `Weryfikuje konto „${acc.label}”: (1) logowanie IMAP + foldery, (2) serwer SMTP oraz (3) zapisywalność folderu docelowego w Vaulcie.`
     )
     .addButton((btn) => {
       btn
@@ -124,11 +133,15 @@ export function renderDiagnosticsPanel(params: {
           resultContainer.empty();
           resultContainer.createDiv({
             cls: "tl-status-text",
-            text: `Trwa sprawdzanie połączenia z ${plugin.settings.imapHost} oraz uprawnień zapisu w Vaulcie...`,
+            text: `Trwa sprawdzanie połączenia z ${acc.imapHost} oraz uprawnień zapisu w Vaulcie...`,
           });
 
           try {
-            const report = await runFullConfigurationDiagnostics(plugin, getDraftPassword());
+            const report = await runFullConfigurationDiagnostics(
+              plugin,
+              getDraftPassword(),
+              acc
+            );
             setLastReport(report);
             renderReportSteps(resultContainer, report);
 
@@ -142,7 +155,9 @@ export function renderDiagnosticsPanel(params: {
               new Notice("Pełna diagnostyka Thunder Look zakończona sukcesem (3/3).");
             } else {
               const failedCount = report.steps.filter((s) => !s.ok).length;
-              new Notice(`Diagnostyka wykryła ${failedCount} problem(y) — sprawdź podpowiedzi poniżej.`);
+              new Notice(
+                `Diagnostyka wykryła ${failedCount} problem(y) — sprawdź podpowiedzi poniżej.`
+              );
             }
           } finally {
             setIsTesting(false);

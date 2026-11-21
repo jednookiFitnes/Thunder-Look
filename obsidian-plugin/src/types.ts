@@ -7,33 +7,29 @@ import type {
   SharedCategoryRule,
   TaskPriority,
 } from "../../shared/types";
+import type { ClientMailRule, SpecialFolderRole } from "../../shared/folderMapper";
 
 export type {
   AiApplyMode,
+  ClientMailRule,
   MailAuthMethod,
   MailProviderPreset,
   SaveDestinationMode,
   SaveScopeMode,
+  SpecialFolderRole,
   TaskPriority,
 };
 
 export type AiCategoryConfig = SharedCategoryRule;
+export type WorkspaceLayoutMode = "three-column" | "classic-split";
+export type MessageListMode = "threads" | "list";
+export type ReaderViewTheme = "original-light" | "force-dark" | "markdown";
 
-export interface TrinitecPluginSettings {
-  settingsVersion: number;
-
-  // Struktura wewnętrzna sejfu Obsidian (ścieżki względne, np. OneDrive)
-  activeProjectsDir: string;
-  archiveProjectsDir: string;
-  contactsDir: string;
-  baseFilePath: string;
-  globalAssetsDir: string;
-  projectCodeRegex: string;
-  masterNotePrefix: string;
-  projectSubfolders: string[];
-
-  // Serwer poczty IMAP / SMTP (Roundcube / Gmail OAuth2 & App Password / Outlook / własny)
-  // Uwaga: hasła i tokeny OAuth NIGDY nie trafiają do data.json — wyłącznie SecretService
+export interface MailAccountConfig {
+  id: string;
+  label: string;
+  color: string;
+  enabled: boolean;
   mailProvider: MailProviderPreset;
   mailAuthMethod: MailAuthMethod;
   serverDomain: string;
@@ -49,20 +45,87 @@ export interface TrinitecPluginSettings {
   emailSignature: string;
   inboxFolder: string;
   sentFolder: string;
+  draftsFolder: string;
   archiveFolder: string;
+  spamFolder: string;
+  trashFolder: string;
+  allowlistFolder: string;
+  appendSentToImap: boolean;
+  strictTlsVerification: boolean;
+}
+
+export const ACCOUNT_COLOR_PALETTE = [
+  "#6366f1",
+  "#10b981",
+  "#f59e0b",
+  "#ec4899",
+  "#06b6d4",
+  "#8b5cf6",
+];
+
+export interface TrinitecPluginSettings {
+  settingsVersion: number;
+
+  // Struktura wewnętrzna sejfu Obsidian (ścieżki względne, np. OneDrive)
+  activeProjectsDir: string;
+  archiveProjectsDir: string;
+  contactsDir: string;
+  baseFilePath: string;
+  globalAssetsDir: string;
+  replyTemplatesDir: string;
+  projectCodeRegex: string;
+  masterNotePrefix: string;
+  projectSubfolders: string[];
+
+  // Wielokontowość (Multi-Account + Unified Inbox)
+  accounts: MailAccountConfig[];
+  activeAccountId: string;
+  unifiedInboxEnabled: boolean;
+
+  // Pola aktywnego konta (utrzymywane w pełnej synchronizacji z activeAccount dla kompatybilności wstecznej)
+  mailProvider: MailProviderPreset;
+  mailAuthMethod: MailAuthMethod;
+  serverDomain: string;
+  googleOAuthClientId: string;
+  imapHost: string;
+  imapPort: number;
+  imapSecure: boolean;
+  imapUser: string;
+  smtpHost: string;
+  smtpPort: number;
+  smtpSecure: boolean;
+  senderName: string;
+  emailSignature: string;
+  inboxFolder: string;
+  sentFolder: string;
+  draftsFolder: string;
+  archiveFolder: string;
+  spamFolder: string;
   trashFolder: string;
   allowlistFolder: string;
   quotaWarnPercent: number;
 
-  // Bezpieczeństwo i zachowanie IMAP
+  // Bezpieczeństwo, wydajność i zachowanie klienta poczty
   enableImapIdle: boolean;
+  desktopNotifications: boolean;
   nonIntrusivePeek: boolean;
+  autoMarkReadDelaySec: number;
   appendSentToImap: boolean;
   stripQuotesAndSignatures: boolean;
   blockRemoteImagesByDefault: boolean;
+  trustedImageSenders: string[];
   saveRawEmlCopy: boolean;
   strictTlsVerification: boolean;
   maxAttachmentSizeMb: number;
+
+  // Układ interfejsu
+  layoutMode: WorkspaceLayoutMode;
+  foldersCollapsed: boolean;
+  messageListMode: MessageListMode;
+  readerThemeMode: ReaderViewTheme;
+
+  // Reguły klienckie
+  mailRules: ClientMailRule[];
 
   // Polityka ręcznego zapisu Opt-in
   optInStrictMode: boolean;
@@ -87,18 +150,11 @@ export interface TrinitecPluginSettings {
   aiCategories: AiCategoryConfig[];
 }
 
-export const DEFAULT_SETTINGS: TrinitecPluginSettings = {
-  settingsVersion: 2,
-
-  activeProjectsDir: "11 - Notes - Trinitec Projekty",
-  archiveProjectsDir: "12 - Notes - Trinitec Archiwum",
-  contactsDir: "11 - Notes - Trinitec Projekty/kontakty",
-  baseFilePath: "1 - Trinitec MOC/_base_trinitec_projekty.base",
-  globalAssetsDir: "_Assets",
-  projectCodeRegex: "\\b\\d{2}-\\d{3}\\b",
-  masterNotePrefix: "_",
-  projectSubfolders: ["Zamówienia", "Rysunki", "Attachments"],
-
+export const DEFAULT_ACCOUNT: MailAccountConfig = {
+  id: "default",
+  label: "Główna skrzynka",
+  color: "#6366f1",
+  enabled: true,
   mailProvider: "roundcube",
   mailAuthMethod: "password",
   serverDomain: "trinitec.pl",
@@ -114,19 +170,72 @@ export const DEFAULT_SETTINGS: TrinitecPluginSettings = {
   emailSignature: "Pozdrawiam,\nPiotr Świerk",
   inboxFolder: "INBOX",
   sentFolder: "Sent",
+  draftsFolder: "Drafts",
   archiveFolder: "Archive",
+  spamFolder: "Junk",
   trashFolder: "Trash",
   allowlistFolder: "INBOX/Do-Vaulta",
+  appendSentToImap: true,
+  strictTlsVerification: true,
+};
+
+export const DEFAULT_SETTINGS: TrinitecPluginSettings = {
+  settingsVersion: 3,
+
+  activeProjectsDir: "11 - Notes - Trinitec Projekty",
+  archiveProjectsDir: "12 - Notes - Trinitec Archiwum",
+  contactsDir: "11 - Notes - Trinitec Projekty/kontakty",
+  baseFilePath: "1 - Trinitec MOC/_base_trinitec_projekty.base",
+  globalAssetsDir: "_Assets",
+  replyTemplatesDir: "_Templates/Mail",
+  projectCodeRegex: "\\b\\d{2}-\\d{3}\\b",
+  masterNotePrefix: "_",
+  projectSubfolders: ["Zamówienia", "Rysunki", "Attachments"],
+
+  accounts: [{ ...DEFAULT_ACCOUNT }],
+  activeAccountId: "default",
+  unifiedInboxEnabled: false,
+
+  mailProvider: DEFAULT_ACCOUNT.mailProvider,
+  mailAuthMethod: DEFAULT_ACCOUNT.mailAuthMethod,
+  serverDomain: DEFAULT_ACCOUNT.serverDomain,
+  googleOAuthClientId: DEFAULT_ACCOUNT.googleOAuthClientId,
+  imapHost: DEFAULT_ACCOUNT.imapHost,
+  imapPort: DEFAULT_ACCOUNT.imapPort,
+  imapSecure: DEFAULT_ACCOUNT.imapSecure,
+  imapUser: DEFAULT_ACCOUNT.imapUser,
+  smtpHost: DEFAULT_ACCOUNT.smtpHost,
+  smtpPort: DEFAULT_ACCOUNT.smtpPort,
+  smtpSecure: DEFAULT_ACCOUNT.smtpSecure,
+  senderName: DEFAULT_ACCOUNT.senderName,
+  emailSignature: DEFAULT_ACCOUNT.emailSignature,
+  inboxFolder: DEFAULT_ACCOUNT.inboxFolder,
+  sentFolder: DEFAULT_ACCOUNT.sentFolder,
+  draftsFolder: DEFAULT_ACCOUNT.draftsFolder,
+  archiveFolder: DEFAULT_ACCOUNT.archiveFolder,
+  spamFolder: DEFAULT_ACCOUNT.spamFolder,
+  trashFolder: DEFAULT_ACCOUNT.trashFolder,
+  allowlistFolder: DEFAULT_ACCOUNT.allowlistFolder,
   quotaWarnPercent: 80,
 
   enableImapIdle: true,
+  desktopNotifications: true,
   nonIntrusivePeek: true,
+  autoMarkReadDelaySec: 0,
   appendSentToImap: true,
   stripQuotesAndSignatures: true,
   blockRemoteImagesByDefault: true,
+  trustedImageSenders: [],
   saveRawEmlCopy: false,
   strictTlsVerification: true,
   maxAttachmentSizeMb: 25,
+
+  layoutMode: "three-column",
+  foldersCollapsed: false,
+  messageListMode: "threads",
+  readerThemeMode: "original-light",
+
+  mailRules: [],
 
   optInStrictMode: true,
   defaultSaveMode: "new-file",
@@ -178,16 +287,29 @@ export const DEFAULT_SETTINGS: TrinitecPluginSettings = {
   ],
 };
 
+export interface LazyAttachmentMeta {
+  partId: string;
+  filename: string;
+  contentType: string;
+  size: number;
+  encoding?: string;
+}
+
 export interface ParsedAttachment {
   filename: string;
   contentType: string;
   size: number;
   content: Buffer;
+  partId?: string;
+  lazy?: boolean;
 }
 
 export interface ParsedEmailMessage {
   uid?: number;
   folder?: string;
+  accountId?: string;
+  accountLabel?: string;
+  accountColor?: string;
   messageId?: string;
   inReplyTo?: string;
   references?: string[];
@@ -218,19 +340,32 @@ export interface ImapFolderSummary {
   messages: number;
   unseen: number;
   uidValidity: string;
+  uidNext?: number;
+  specialUse?: string;
+  delimiter?: string;
+  role?: SpecialFolderRole;
+  accountId?: string;
 }
 
 export interface ImapMessageHeader {
   uid: number;
   folder: string;
+  accountId?: string;
+  accountLabel?: string;
+  accountColor?: string;
   uidValidity: string;
   messageId: string;
   inReplyTo: string;
   references: string[];
   date: string;
+  internalDateIso?: string;
   fromName: string;
   fromEmail: string;
+  toEmail?: string;
   subject: string;
+  snippet?: string;
+  hasAttachments?: boolean;
+  attachmentParts?: LazyAttachmentMeta[];
   sizeBytes: number;
   seen: boolean;
   flagged: boolean;
@@ -241,9 +376,11 @@ export interface EmailThreadGroup {
   threadKey: string;
   subject: string;
   latestDate: string;
+  latestDateIso?: string;
   totalSizeBytes: number;
   unreadCount: number;
   flagged: boolean;
+  hasAttachments?: boolean;
   projectCode: string | null;
   messages: ImapMessageHeader[];
 }
@@ -254,11 +391,15 @@ export interface FolderStorageInfo {
   unseen: number;
   totalBytes: number;
   largestMessageBytes: number;
+  isAggregate?: boolean;
+  role?: SpecialFolderRole;
 }
 
 export interface LargeMessageInfo {
   uid: number;
   folder: string;
+  messageId?: string;
+  alsoInFolders?: string[];
   date: string;
   from: string;
   subject: string;
@@ -272,6 +413,7 @@ export interface MailboxQuotaReport {
   usagePercent: number | null;
   totalCalculatedBytes: number;
   totalMessages: number;
+  aggregateFolderPath?: string | null;
   folders: FolderStorageInfo[];
   largestMessages: LargeMessageInfo[];
 }
@@ -301,6 +443,7 @@ export interface AiAnalysisProposal {
 }
 
 export interface ImapConnectionTestOverride {
+  accountId?: string;
   host?: string;
   port?: number;
   secure?: boolean;

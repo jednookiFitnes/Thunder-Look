@@ -241,3 +241,115 @@ export function buildCanonicalThreadId(input: {
   const subj = normalizeSubjectForThread(input.subject || "");
   return `thread:${computeContentHash({ subject: subj })}`;
 }
+
+const HTML_NAMED_ENTITIES: Record<string, string> = {
+  nbsp: " ",
+  zwnj: "",
+  zwj: "",
+  shy: "",
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  ndash: "–",
+  mdash: "—",
+  hellip: "…",
+  laquo: "«",
+  raquo: "»",
+  copy: "©",
+  reg: "®",
+  trade: "™",
+  bull: "•",
+  middot: "·",
+};
+
+function decodeHtmlEntities(input: string): string {
+  return input.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (_match, entity: string) => {
+    const lower = entity.toLowerCase();
+    if (lower in HTML_NAMED_ENTITIES) {
+      return HTML_NAMED_ENTITIES[lower];
+    }
+    if (lower.startsWith("#x")) {
+      const cp = parseInt(lower.slice(2), 16);
+      if (Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff) {
+        return String.fromCodePoint(cp);
+      }
+      return " ";
+    }
+    if (lower.startsWith("#")) {
+      const cp = parseInt(lower.slice(1), 10);
+      if (Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff) {
+        return String.fromCodePoint(cp);
+      }
+      return " ";
+    }
+    return " ";
+  });
+}
+
+/**
+ * Ekstrahuje czysty, czytelny 1-liniowy snippet wiadomości na listę maili:
+ * - usuwa bloki <style>, <script>, komentarze HTML, tagi oraz encje (&nbsp;, &zwnj;, itp.),
+ * - usuwa artefakty blokady obrazków ([Zablokowany obraz zdalny], \[Zablokowany obraz zdalny\]),
+ * - usuwa znaki o zerowej szerokości (U+200B..U+200F, U+00AD, U+FEFF), surowe URL-e, nagłówki cytowań i znaczniki Markdown.
+ */
+export function extractCleanSnippet(rawTextOrHtml: string, maxLen = 110): string {
+  if (!rawTextOrHtml) return "";
+
+  let s = String(rawTextOrHtml);
+
+  // 1. Usuń bloki style/script/head/title oraz komentarze HTML
+  s = s
+    .replace(/<(style|script|head|title|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ");
+
+  // 2. Usuń komunikaty zablokowanych obrazków (także z ucieczkami Markdown `\[...\]` lub `\ ...\`)
+  s = s.replace(
+    /(?:\\?\[)?\s*Zablokowany\s+obraz\s+zdalny\s*(?:\\?\])?/gi,
+    " "
+  );
+
+  // 3. Usuń znaczniki obrazków Markdown `![alt](url)` i zamień linki `[tekst](url)` na `tekst`
+  s = s
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]*\)/gi, "$1");
+
+  // 4. Usuń wszystkie tagi HTML
+  s = s.replace(/<[^>]+>/g, " ");
+
+  // 5. Zdekoduj encje HTML oraz usuń znaki sterujące / o zerowej szerokości
+  s = decodeHtmlEntities(s);
+  s = s.replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\u00AD\uFEFF\u034F]/g, "");
+
+  // 6. Usuń typowe nagłówki cytatów i cytowane linie na początku
+  const lines = normalizeLineEndings(s)
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => {
+      if (!l) return false;
+      if (l.startsWith(">")) return false;
+      if (/^(On\s.+wrote:|W\s+dniu\s.+napisał|Dnia\s.+napisał)/i.test(l)) return false;
+      if (/^-{2,}\s*(Oryginalna wiadomość|Original Message|Forwarded message)/i.test(l)) return false;
+      return true;
+    });
+
+  s = lines.join(" ");
+
+  // 7. Usuń surowe linki URL, resztki składni Markdown i ukośniki ucieczki
+  s = s
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\\([\\`*_{}[\]()#+\-.!])/g, "$1")
+    .replace(/[*_`~#>|]+/g, " ")
+    .replace(/^\s*[-–—•·]+\s*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!s) return "";
+  if (s.length <= maxLen) return s;
+
+  const sliced = s.slice(0, maxLen).replace(/\s+\S*$/, "").trim();
+  const base = sliced.length >= Math.floor(maxLen * 0.5) ? sliced : s.slice(0, maxLen).trim();
+  return `${base}…`;
+}
+

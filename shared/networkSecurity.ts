@@ -156,14 +156,18 @@ export function buildPolishImapErrorHint(
 
   if (
     isGmail &&
-    (lower.includes("auth") ||
+    (lower.includes("application-specific") ||
+      lower.includes("invalidsecondfactor") ||
+      lower.includes("534-5.7.9") ||
+      lower.includes("534 5.7.9") ||
+      lower.includes("auth") ||
       lower.includes("credential") ||
-      lower.includes("application-specific") ||
       lower.includes("web login") ||
       lower.includes("xoauth2") ||
+      lower.includes("command failed") ||
       lower.includes("no"))
   ) {
-    return "Gmail wymaga zalogowania przez przeglądarkę Google (OAuth2) lub 16-znakowego Hasła aplikacji Google (Konto Google → Bezpieczeństwo → Weryfikacja dwuetapowa → Hasła aplikacji). Sprawdź też, czy IMAP jest włączony w Gmailu.";
+    return "Gmail odrzucił zwykłe hasło konta (błąd 534-5.7.9 / Application-specific password required). Włącz weryfikację dwuetapową na koncie Google i wygeneruj specjalne 16-literowe Hasło aplikacji pod adresem: https://myaccount.google.com/apppasswords (albo wybierz metodę „Logowanie przez Google w przeglądarce”).";
   }
 
   if (isOutlook && (lower.includes("auth") || lower.includes("login") || lower.includes("credential"))) {
@@ -206,4 +210,36 @@ export function buildPolishImapErrorHint(
   }
 
   return "Zweryfikuj nazwę serwera (np. trinitec.pl / mail.trinitec.pl / imap.gmail.com), port (993 SSL/TLS lub 143 STARTTLS) oraz poświadczenia.";
+}
+
+export function buildPolishSmtpErrorHint(
+  errorMsg: string,
+  host: string,
+  port: number,
+  secure: boolean
+): string {
+  const lower = String(errorMsg || "").toLowerCase();
+  const isGmail = isGmailHostname(host);
+
+  if (
+    isGmail &&
+    (lower.includes("application-specific") ||
+      lower.includes("invalidsecondfactor") ||
+      lower.includes("534-5.7.9") ||
+      lower.includes("534 5.7.9") ||
+      lower.includes("535-5.7.8") ||
+      lower.includes("invalid login") ||
+      lower.includes("auth"))
+  ) {
+    return "Gmail wymaga 16-literowego Hasła aplikacji zamiast zwykłego hasła do konta Google. Wygeneruj je na: https://myaccount.google.com/apppasswords (wymagana włączona weryfikacja dwuetapowa 2FA) i wklej w pole hasła powyżej.";
+  }
+
+  if (port === 587 && secure) {
+    return "Port 587 używa STARTTLS — wyłącz opcję „Bezpośredni SSL/TLS” lub przełącz port na 465.";
+  }
+  if (port === 465 && !secure) {
+    return "Port 465 wymaga włączonej opcji „Bezpośredni SSL/TLS”.";
+  }
+
+  return buildPolishImapErrorHint(errorMsg, host, port, secure);
 }

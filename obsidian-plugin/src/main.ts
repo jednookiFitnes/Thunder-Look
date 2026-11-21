@@ -1,15 +1,19 @@
 import { Notice, Plugin, TFile } from "obsidian";
+import { evaluateMailRules } from "../../shared/folderMapper";
 import {
   DEFAULT_SETTINGS,
   PluginRuntimeStatus,
   TrinitecPluginSettings,
 } from "./types";
 import { MruStore } from "./utils/mruStore";
-import { migrateAndValidateSettings } from "./utils/settingsMigration";
+import {
+  migrateAndValidateSettings,
+  syncTopLevelToActiveAccount,
+} from "./utils/settingsMigration";
 import { SecretService } from "./services/secretService";
 import { GoogleOAuthService } from "./services/googleOAuthService";
 import { MailCacheService } from "./services/mailCacheService";
-import { ImapService } from "./services/imapService";
+import { ImapService, type IdleNewMailEvent } from "./services/imapService";
 import { SmtpService } from "./services/smtpService";
 import { ProjectMatcherService } from "./services/projectMatcherService";
 import { VaultWriterService } from "./services/vaultWriterService";
@@ -87,7 +91,7 @@ export default class TrinitecMailPlugin extends Plugin {
     registerBlock("thunder-look");
     registerBlock("trinitec-mail");
 
-    // Pasek stanu (Status Bar) — stan połączenia, ostatnia synchronizacja, liczba nieprzeczytanych
+    // Pasek stanu (Status Bar)
     this.statusBarItemEl = this.addStatusBarItem();
     this.statusBarItemEl.addClass("tl-statusbar-item");
     this.registerDomEvent(this.statusBarItemEl, "click", () => {
@@ -121,8 +125,9 @@ export default class TrinitecMailPlugin extends Plugin {
       id: "thunder-look-compose-email",
       name: "Wyślij nowy e-mail (SMTP)",
       callback: () => {
-        const signature = this.settings.emailSignature.trim()
-          ? `\n\n-- \n${this.settings.emailSignature.trim()}`
+        const acc = this.imapService.resolveAccount();
+        const signature = acc.emailSignature.trim()
+          ? `\n\n-- \n${acc.emailSignature.trim()}`
           : "";
         new ComposeMailModal(
           this.app,
@@ -130,7 +135,9 @@ export default class TrinitecMailPlugin extends Plugin {
           this.smtpService,
           this.projectMatcher,
           this.mruStore,
-          { body: signature }
+          { accountId: acc.id, body: signature },
+          this.imapService,
+          this.cacheService
         ).open();
       },
     });
@@ -220,20 +227,103 @@ export default class TrinitecMailPlugin extends Plugin {
 
     this.addSettingTab(new TrinitecSettingTab(this.app, this));
 
-    // Opcjonalne uruchomienie IMAP IDLE w tle (po pełnym załadowaniu layoutu)
+    // Stabilny wielokontowy IMAP IDLE w tle (RFC 2177)
     this.app.workspace.onLayoutReady(() => {
-      if (this.settings.enableImapIdle && this.settings.imapHost && this.settings.imapUser) {
-        void this.imapService.startIdleWatcher((folder) => {
-          new Notice(`Thunder Look: nowa wiadomość w folderze ${folder}`);
-          const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_TRINITEC_MAIL);
-          for (const leaf of leaves) {
-            if (leaf.view instanceof MailWorkspaceView) {
-              void leaf.view.refreshFolder(folder);
-            }
-          }
-        });
-      }
+      void this.restartIdleWatchers();
     });
+  }
+
+  async restartIdleWatchers(): Promise<void> {
+    await this.imapService.stopIdleWatcher();
+    if (!this.settings.enableImapIdle) return;
+    const hasConfigured = this.settings.accounts.some(
+      (a) => a.enabled && a.imapHost.trim() && a.imapUser.trim()
+    );
+    if (!hasConfigured) return;
+
+    await this.imapService.startIdleWatchers((ev) => {
+      void this.handleIdleNewMail(ev);
+    });
+  }
+
+  private async handleIdleNewMail(ev: IdleNewMailEvent): Promise<void> {
+    // 1. Zastosuj klienckie reguły pocztowe dla nowo przybyłych wiadomości
+    if (this.settings.mailRules.length > 0 && ev.newHeaders.length > 0) {
+      for (const h of ev.newHeaders) {
+        const evalRes = evaluateMailRules(this.settings.mailRules, {
+          fromEmail: h.fromEmail,
+          fromName: h.fromName,
+          subject: h.subject,
+          hasAttachments: Boolean(h.hasAttachments),
+        });
+        if (evalRes.matchedRules.length === 0) continue;
+        try {
+          if (evalRes.mergedActions.star && !h.flagged) {
+            await this.imapService.setMessageFlag(ev.folder, h.uid, "\\Flagged", true, ev.accountId);
+            h.flagged = true;
+          }
+          if (evalRes.mergedActions.markRead && !h.seen) {
+            await this.imapService.setMessageFlag(ev.folder, h.uid, "\\Seen", true, ev.accountId);
+            h.seen = true;
+          }
+          if (evalRes.mergedActions.moveToFolder && evalRes.mergedActions.moveToFolder !== ev.folder) {
+            await this.imapService.moveMessage(
+              ev.folder,
+              h.uid,
+              evalRes.mergedActions.moveToFolder,
+              ev.accountId
+            );
+          }
+        } catch {
+          // Nie przerywaj powiadomień przy błędzie pojedynczej reguły
+        }
+      }
+    }
+
+    // 2. Aktualizuj pasek stanu
+    this.updateRuntimeStatus({
+      state: "connected",
+      lastSyncAt: new Date(),
+      unreadCount: ev.totalUnseen || this.runtimeStatus.unreadCount + ev.newHeaders.length,
+    });
+
+    // 3. Wstrzyknij nowe wiadomości na górę otwartych widoków BEZ przerywania czytanej wiadomości
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_TRINITEC_MAIL);
+    for (const leaf of leaves) {
+      if (leaf.view instanceof MailWorkspaceView) {
+        leaf.view.handleIncomingIdleEvent(ev);
+      }
+    }
+
+    // 4. Dyskretne powiadomienie Notice + opcjonalne systemowe Notification z kliknięciem otwierającym maila
+    const newest = ev.newHeaders[0];
+    const title = newest
+      ? `Nowa wiadomość (${ev.accountLabel})`
+      : `Thunder Look: nowa poczta w ${ev.folder}`;
+    const body = newest ? `${newest.fromName}: ${newest.subject}` : ev.accountLabel;
+
+    new Notice(`${title} — ${body}`, 5000);
+
+    if (
+      this.settings.desktopNotifications &&
+      typeof Notification !== "undefined" &&
+      Notification.permission !== "denied"
+    ) {
+      try {
+        const notif = new Notification(title, { body });
+        notif.onclick = () => {
+          window.focus();
+          void this.activateMailView().then(() => {
+            const viewLeaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_TRINITEC_MAIL)[0];
+            if (viewLeaf?.view instanceof MailWorkspaceView && newest) {
+              void viewLeaf.view.openSpecificMessage(ev.accountId, ev.folder, newest.uid);
+            }
+          });
+        };
+      } catch {
+        // Ignoruj w środowiskach bez systemowego API Notification
+      }
+    }
   }
 
   /**
@@ -241,7 +331,7 @@ export default class TrinitecMailPlugin extends Plugin {
    * NIGDY nie wywołuj detachLeavesOfType() w onunload() — nie niszczymy układu okien użytkownika.
    */
   onunload(): void {
-    void this.imapService?.stopIdleWatcher();
+    void this.imapService?.disconnectAll();
     this.cacheService?.close();
   }
 
@@ -253,7 +343,9 @@ export default class TrinitecMailPlugin extends Plugin {
   private renderStatusBar(): void {
     if (!this.statusBarItemEl) return;
     const { state, lastSyncAt, unreadCount, lastError } = this.runtimeStatus;
-    const syncLabel = lastSyncAt ? lastSyncAt.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }) : "—";
+    const syncLabel = lastSyncAt
+      ? lastSyncAt.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })
+      : "—";
     let stateLabel = "Gotowy";
     if (state === "syncing") stateLabel = "Synchronizacja...";
     else if (state === "connected") stateLabel = "Połączono";
@@ -301,6 +393,7 @@ export default class TrinitecMailPlugin extends Plugin {
   }
 
   async saveSettings(): Promise<void> {
+    syncTopLevelToActiveAccount(this.settings);
     await this.saveData(this.settings);
     this.imapService?.updateSettings(this.settings);
     this.smtpService?.updateSettings(this.settings);

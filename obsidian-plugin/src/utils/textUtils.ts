@@ -1,6 +1,7 @@
 export {
   buildCanonicalThreadId,
   computeContentHash,
+  extractCleanSnippet,
   extractObsidianTasks,
   formatBytes,
   formatObsidianTaskLine,

@@ -38,6 +38,10 @@ describe('HTML Email Sanitizer & XSS/Tracking Protection', () => {
     assert.ok(!/data:text\/html/i.test(res.bodyHtml));
     assert.ok(res.bodyHtml.includes('rel="noopener noreferrer"'));
     assert.ok(res.bodyHtml.includes('target="_blank"'));
+    assert.ok(
+      res.bodyHtml.includes('title="https://trinitec.pl"'),
+      'Bezpieczny link powinien zawierać anty-phishingowy tooltip title z pełnym URL'
+    );
   });
 
   it('domyślnie blokuje zdalne obrazy i piksele śledzące oraz wymusza CSP img-src none', () => {
@@ -67,4 +71,36 @@ describe('HTML Email Sanitizer & XSS/Tracking Protection', () => {
     assert.equal(res.blockedRemoteImagesCount, 0);
     assert.ok(res.cspHeader.includes('img-src cid: data:'));
   });
+
+  it('nie nakłada obramowań na tabele i komórki newsletterów oraz wspiera motywy original-light i force-dark', () => {
+    const newsletterHtml = `
+      <table width="600">
+        <tr><td><p>Nagłówek newslettera</p></td></tr>
+        <tr><td><table><tr><td>Treść bez ramek</td></tr></table></td></tr>
+      </table>
+    `;
+
+    const light = sanitizeEmailHtml(newsletterHtml, {
+      blockRemoteImages: true,
+      themeMode: 'original-light',
+    });
+    assert.ok(light.html.includes('tl-mail-card'), 'Dokument HTML powinien wyśrodkowywać kartę .tl-mail-card');
+    assert.ok(
+      /table\s*\{[^}]*border:\s*0/i.test(light.html),
+      'Tabele muszą mieć neutralny reset border: 0'
+    );
+    assert.ok(
+      /td,\s*th\s*\{[^}]*border:\s*0/i.test(light.html),
+      'Komórki td, th nie mogą mieć wymuszonego obramowania'
+    );
+    assert.ok(!/td,\s*th\s*\{[^}]*1px solid/i.test(light.html));
+
+    const dark = sanitizeEmailHtml(newsletterHtml, {
+      blockRemoteImages: true,
+      themeMode: 'force-dark',
+    });
+    assert.ok(dark.html.includes('color-scheme: dark'));
+    assert.ok(dark.html.includes('#13151a') && dark.html.includes('#1b1e26'));
+  });
 });
+

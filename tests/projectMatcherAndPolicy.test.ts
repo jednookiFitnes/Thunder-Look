@@ -32,7 +32,7 @@ describe('Project Matcher, Settings Migration, Prompt Isolation & MCP Policy', (
 
   it('bezpiecznie migruje puste lub uszkodzone ustawienia wtyczki bez TypeError', () => {
     const migratedEmpty = migrateAndValidateSettings(null);
-    assert.equal(migratedEmpty.settingsVersion, 2);
+    assert.equal(migratedEmpty.settingsVersion, 3);
     assert.equal(migratedEmpty.strictTlsVerification, true);
     assert.equal(migratedEmpty.blockRemoteImagesByDefault, true);
     assert.equal(migratedEmpty.optInStrictMode, true);

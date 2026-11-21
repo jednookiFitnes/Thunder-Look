@@ -8,9 +8,13 @@ coverage/
 .env
 .env.local
 .env.*.local
+firebase-applet-config.json
 *.key
 *.pem
 *.p12
+
+# Local uploaded screenshots / temporary assets
+public/assets/aistudio/
 
 # Local AI policy files (keep only ai-policy.example.json in repo)
 mcp-cli/ai-policy.json

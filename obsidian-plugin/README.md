@@ -3,23 +3,25 @@
 **Autor:** Piotr Świerk  
 **ID wtyczki:** `thunder-look` (`isDesktopOnly: true`)
 
-Desktopowa wtyczka pocztowa i menedżer projektów dla Obsidian: nieinwazyjny klient IMAP/SMTP (`EXAMINE` + `BODY.PEEK[]`), wsparcie dla **Roundcube (własny serwer/domena np. `trinitec.pl`)**, **Gmail (OAuth2 w przeglądarce + Hasło aplikacji)** oraz **Outlook / Office 365**.
+Pełny desktopowy klient poczty IMAP/SMTP i menedżer projektów dla Obsidian: obsługa wielu kont (**Roundcube / własna domena**, **Gmail OAuth2 lub Hasło aplikacji**, **Outlook / Office 365**), wspólna skrzynka odbiorcza (**Unified Inbox**), stałe połączenie IMAP z paginacją i cache L1/L2, nowoczesny układ 3-kolumnowy lub klasyczny z przeciąganymi separatorami oraz bezpieczny zapis Opt-in do Vaulta.
 
 ---
 
 ## Kluczowe funkcje
 
-- **Kreator szybkiej konfiguracji i 3-etapowa diagnostyka** (IMAP + SMTP + zapisywalność folderu w sejfie).
-- **Bezpieczne przechowywanie haseł i tokenów:** `app.secretStorage` → Electron `safeStorage` → lokalne szyfrowanie AES-256-GCM (poza `data.json` i chmurą).
-- **Ścisły tryb Opt-in, wątkowanie i deduplikacja:** zapisywanie wyłącznie wskazanych maili, fragmentów lub załączników; frontmatter zawiera `message_id`, `in_reply_to`, `thread_id` i `content_hash`; automatyczne wykrywanie duplikatów i linkowanie wątków (`## Powiązane w wątku`).
-- **Bezpieczne załączniki:** ostrzeganie i domyślne odznaczanie niebezpiecznych rozszerzeń (`.exe`, `.bat`, `.ps1`, `.js`, `.msi`, `.iso` itd.), konfigurowalny limit rozmiaru oraz deduplikacja po **SHA-256**.
-- **Ochrona przed XSS i tracking pixelami:** sanityzacja DOMPurify + `<iframe sandbox="">` z domyślną blokadą zdalnych obrazów (CSP `img-src 'none'`) oraz przyciskiem ręcznego doładowania obrazów.
-- **Odpowiadanie i wysyłka:** Odpowiedz / Odpowiedz wszystkim / Przekaż dalej, konfigurowalna stopka oraz **5-sekundowe „Cofnij wysyłkę”**.
-- **Pasek statusu i tryb Offline:** licznik nieprzeczytanych + ostatnia synchronizacja + odczyt z lokalnego cache IndexedDB bez dostępu do sieci.
+- **Wydajność klasy desktopowej:** stały menedżer sesji IMAP (kolejka operacji, keep-alive `NOOP`, auto-reconnect), paginacja po 50 nagłówków, leniwe dociąganie pełnej treści i załączników (`partId`), prefetch 2 sąsiednich maili oraz 2-warstwowy cache RAM (L1) + IndexedDB (L2) ze wzorcem stale-while-revalidate.
+- **Wiele kont + Wspólna skrzynka (Unified Inbox):** konfiguracja wielu skrzynek z etykietami i kolorami, osobnymi hasłami w `electron.safeStorage`, szybkim przełącznikiem w panelu folderów i automatycznym doborem nadawcy `Od:` przy odpowiedzi.
+- **Nowoczesny interfejs i czysty podgląd HTML:** 3 kolumny lub układ klasyczny góra-dół, przeciągane uchwyty szerokości kolumn, czysty reset tabel newsletterów wewnątrz `<iframe sandbox="">` (brak obcych ramek wokół komórek), przełącznik **Jasny / Ciemny / Markdown** oraz zaufani nadawcy dla obrazów zdalnych.
+- **Pełne zarządzanie wiadomościami i folderami:** Usuń do Kosza, Usuń trwale, Przywróć, Opróżnij Kosz/Spam, Archiwizuj, Spam, 5-sekundowe **Cofnij**, flagi `\Seen` / `\Flagged` (z opcjonalnym opóźnieniem automatycznego oznaczania jako przeczytane), Przenieś do folderu, **Drag & Drop** na drzewko folderów, menu kontekstowe, zaznaczanie zbiorcze (`Shift+Click` / `Ctrl+Click`) oraz tworzenie/zmiana nazwy/usuwanie folderów IMAP z ochroną folderów systemowych.
+- **Wyszukiwanie, Wątki, Załączniki, Szkice i Skróty:** serwerowe `IMAP SEARCH` (i `X-GM-RAW` dla Gmaila) z operatorami (`from:`, `to:`, `subject:`, `has:attachment`, `is:unread`, `before:`, `after:`), Widok wątków (Conversation View), podgląd obrazów i PDF w Obsidian, wklejanie zrzutów ekranu (`Ctrl+V`), szablony odpowiedzi z Vaulta, szkice synchronizowane przez IMAP (autozapis co 15 s) oraz skróty klawiszowe (`J/K`, `E`, `R`, `A`, `F`, `C`, `S`, `U`, `/`, `Delete`, `?`).
+- **Niezawodne powiadomienia IDLE i Reguły pocztowe:** wielokontowy `IMAP IDLE` (RFC 2177 z odnawianiem co 14 min i detekcją wybudzenia), opcjonalne powiadomienia systemowe OS z otwieraniem maila po kliknięciu oraz klienckie reguły automatyczne (gwiazdka / przeczytane / przeniesienie do folderu).
+- **Dokładny Monitor zajętości skrzynki:** poprawna normalizacja jednostek `GETQUOTAROOT`, uwzględnienie `[Gmail]/Wszystkie` w sumie wiadomości oraz deduplikacja największych wiadomości po `Message-ID`.
 
 ---
 
 ## Instalacja w 30 sekund
+
+Szczegółowa instrukcja znajduje się także w pliku `INSTRUKCJA-INSTALACJI.txt`.
 
 ### Windows (PowerShell)
 ```powershell
@@ -46,11 +48,3 @@ Na Windows z sejfem w OneDrive/Google Drive zalecany jest skrypt budujący poza 
 ```powershell
 .\scripts\build.ps1
 ```
-
----
-
-## Test dymny po instalacji w Obsidian
-
-1. Włącz wtyczkę **Thunder Look** i otwórz konsolę deweloperską (`Ctrl+Shift+I` / `Cmd+Opt+I`) — upewnij się, że brak błędów przy starcie.
-2. W **Ustawienia → Thunder Look** wybierz preset (np. Roundcube z serwerem `trinitec.pl` lub Gmail) i kliknij **Przetestuj pełną konfigurację**.
-3. Otwórz widok poczty z paska bocznego, sprawdź podgląd HTML z blokadą zdalnych obrazów oraz zapis Opt-in do projektu (`SaveEmailModal`).

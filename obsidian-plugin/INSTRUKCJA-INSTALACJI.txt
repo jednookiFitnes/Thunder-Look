@@ -1,0 +1,95 @@
+================================================================================
+THUNDER LOOK — INSTRUKCJA INSTALACJI I AKTUALIZACJI (OBSIDIAN DESKTOP)
+Autor: Piotr Świerk | ID wtyczki: thunder-look | Desktop only
+================================================================================
+
+1. SZYBKA INSTALACJA / AKTUALIZACJA (ZALECANE — WINDOWS POWERSHELL)
+--------------------------------------------------------------------------------
+Otwórz PowerShell w katalogu `obsidian-plugin` i uruchom:
+
+    .\scripts\install-to-vault.ps1
+
+Opcjonalnie ze wskazaniem konkretnej ścieżki sejfu (np. poza OneDrive):
+
+    .\scripts\install-to-vault.ps1 -VaultPath "C:\Sciezka\Do\Twojego\Sejfu"
+
+
+2. INSTALACJA RĘCZNA (WINDOWS / macOS / LINUX)
+--------------------------------------------------------------------------------
+1) Skopiuj dokładnie 3 pliki z katalogu `obsidian-plugin/`:
+   - main.js
+   - manifest.json
+   - styles.css
+
+2) Wklej je do folderu wtyczki w swoim sejfie Obsidian:
+   <TwójSejf>/.obsidian/plugins/thunder-look/
+
+   (Uwaga: NIE usuwaj istniejącego pliku `data.json`, jeśli aktualizujesz wtyczkę —
+   Thunder Look automatycznie zmigruje Twoje ustawienia z poprzednich wersji do
+   nowego modelu wielokontowego v3 bez utraty danych i bez naruszania haseł w
+   Electron safeStorage).
+
+3) W Obsidian otwórz: Ustawienia -> Wtyczki społeczności -> Odśwież listę ->
+   włącz „Thunder Look” (lub zrestartuj Obsidian przy aktualizacji).
+
+
+3. KOMPILACJA ZE ŹRÓDEŁ (DLA DEVELOPERÓW)
+--------------------------------------------------------------------------------
+W katalogu `obsidian-plugin/`:
+    npm install
+    npm run typecheck
+    npm run build
+
+W głównym katalogu repozytorium (pełna weryfikacja testów + typów + buildów):
+    npm run verify
+
+
+4. NAJWAŻNIEJSZE FUNKCJE W OBECNEJ WERSJI
+--------------------------------------------------------------------------------
+- Stałe połączenie IMAP z priorytetową kolejką operacji (kliknięcia użytkownika
+  wyprzedzają prefetch w tle), twardym limitem czasu, auto-reconnectem oraz
+  2-warstwowym cache (RAM L1 + IndexedDB L2) z natychmiastowym (0 ms) podglądem
+  nagłówka i skeleton loaderem bez zawieszania się przy szybkim przełączaniu.
+- Górny pasek zakładek skrzynek (Top Account Tabs): „Wszystkie skrzynki (Unified)”
+  + zakładki per konto z licznikami nieprzeczytanych i szybkim przyciskiem „+”,
+  a także czysty ekran powitalny dla świeżego sejfu bez skonfigurowanych kont.
+- Nowoczesny interfejs 3-kolumnowy / klasyczny góra-dół z 3-kolumnowym Gridem
+  listy wiadomości (bez skakania na hover), czystymi snippetami, uchwytami zmiany
+  szerokości (resizable splitters), podglądem HTML z anty-phishingowymi tooltipami
+  linków i 3-stanowym przełącznikiem motywu maila (Jasny / Ciemny / Markdown).
+- Pełne zarządzanie pocztą: Usuń (Kosz), Usuń trwale, Przywróć, Opróżnij Kosz/Spam,
+  Archiwizuj, Spam, 5-sekundowe Cofnij, Przeczytane/Gwiazdka, Przenieś do folderu,
+  Drag & Drop na drzewko folderów, menu kontekstowe, zaznaczanie zbiorcze
+  (Shift/Ctrl+Click), tworzenie/zmiana nazw/usuwanie folderów IMAP.
+- Wyszukiwanie lokalne i serwerowe IMAP SEARCH (w tym Gmail X-GM-RAW) z operatorami
+  from:, to:, subject:, has:attachment, is:unread, before:, after: oraz pigułkami
+  filtrów.
+- Widok wątków (Conversation View) z rozwijaną historią rozmowy.
+- Załączniki na żądanie z podglądem obrazów i PDF bezpośrednio w Obsidian,
+  zapisem do Vaulta lub na dysk, wklejaniem zrzutów ekranu (Ctrl+V) i szkicami
+  synchronizowanymi przez IMAP (autozapis co 15 s).
+- Niezawodne powiadomienia push (IMAP IDLE RFC 2177 z odnawianiem co 14 min i
+  wykrywaniem wybudzenia komputera), opcjonalne powiadomienia systemowe OS oraz
+  edytor klienckich reguł pocztowych (automatyczne gwiazdkowanie, oznaczanie i
+  przenoszenie nowych wiadomości).
+- Poprawiony Monitor zajętości skrzynki (dokładne jednostki GETQUOTAROOT,
+  prawidłowa suma maili z [Gmail]/Wszystkie, deduplikacja największych maili).
+
+
+5. SKRÓTY KLAWISZOWE W WIDOKU POCZTY
+--------------------------------------------------------------------------------
+  J / ↓         Następna wiadomość
+  K / ↑         Poprzednia wiadomość
+  Delete / #    Usuń zaznaczone do Kosza
+  E             Archiwizuj
+  R             Odpowiedz
+  A             Odpowiedz wszystkim
+  F             Przekaż dalej
+  C             Nowa wiadomość (Compose)
+  S             Gwiazdka (toggle)
+  U             Przeczytane / Nieprzeczytane (toggle)
+  /             Przejdź do paska wyszukiwania
+  Esc           Wyczyść zaznaczenie / wyszukiwanie
+  ?             Otwórz okno pomocy skrótów klawiszowych
+  Ctrl+Enter    Wyślij wiadomość w oknie tworzenia
+================================================================================

@@ -19,7 +19,13 @@ const PLUGIN_ID = 'thunder-look';
 const API_AUTH_TOKEN = process.env.TL_API_TOKEN || crypto.randomBytes(32).toString('hex');
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.obsidian']);
-const SKIP_FILES = new Set(['package-lock.json', 'pnpm-lock.yaml', 'bun.lock', '.env']);
+const SKIP_FILES = new Set([
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'bun.lock',
+  '.env',
+  'firebase-applet-config.json',
+]);
 
 interface RealFileEntry {
   path: string;

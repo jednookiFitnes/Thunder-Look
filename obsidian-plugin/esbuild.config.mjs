@@ -29,15 +29,78 @@ const nodeBuiltins = [
 ];
 
 /**
- * Odchudzenie bundla Obsidian Desktop (redukcja z 3.32 MB -> ~1.1 MB):
+ * Odchudzenie bundla Obsidian Desktop (redukcja z ~2.49 MB -> ~1.0 MB):
+ * - Deduplikacja `iconv-lite` (4 kopie w node_modules -> 1 wspólna kopia v0.7.3) oraz pominięcie ciężkich tablic CJK DBCS
+ *   (`dbcs-data.js` — cp936/cp949/cp950/shiftjis/eucjp/gb18030), przy pełnym zachowaniu UTF-8, UTF-7 (IMAP), UTF-16,
+ *   ISO-8859-2, Windows-1250 i wszystkich kodowań jedno-bajtowych (SBCS).
+ * - Deduplikacja `libmime` (5.x), `libbase64` (1.x) i `@zone-eu/mailsplit` (5.4.x).
  * - `@mixmark-io/domino` (546 KB): zastąpiony natywnym `window.DOMParser` dostarczanym przez Electron/Obsidian.
  * - `pino` (75 KB): zastąpiony noop loggerem (`imapflow` uruchamiamy zawsze z `logger: false`).
  * - `encoding-japanese` (302 KB): zastąpiony lekkim wrapperem `TextDecoder`.
  * - `html-to-text`, `linkify-it`, `tlds`, `socks` (~750 KB): nieużywane dzięki `skipHtmlToText/skipTextToHtml/skipTextLinks` w `simpleParser` i brakowi proxy SOCKS.
  */
+function pickFirstExisting(candidates) {
+  for (const rel of candidates) {
+    const abs = path.resolve(process.cwd(), rel);
+    if (fs.existsSync(abs)) return abs;
+  }
+  return null;
+}
+
+const canonicalIconvLite = pickFirstExisting([
+  "node_modules/imapflow/node_modules/iconv-lite/lib/index.js",
+  "node_modules/iconv-lite/lib/index.js",
+]);
+const canonicalLibmime = pickFirstExisting([
+  "node_modules/mailparser/node_modules/libmime/lib/libmime.js",
+  "node_modules/libmime/lib/libmime.js",
+]);
+const canonicalLibbase64 = pickFirstExisting([
+  "node_modules/mailparser/node_modules/libbase64/lib/libbase64.js",
+  "node_modules/libbase64/lib/libbase64.js",
+]);
+const canonicalMailsplit = pickFirstExisting([
+  "node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/mailsplit.js",
+  "node_modules/@zone-eu/mailsplit/lib/mailsplit.js",
+]);
+
 const bundleSlimmingPlugin = {
   name: "thunder-look-slim-shims",
   setup(build) {
+    if (canonicalIconvLite) {
+      build.onResolve({ filter: /^iconv-lite$/ }, () => ({
+        path: canonicalIconvLite,
+      }));
+    }
+    if (canonicalLibmime) {
+      build.onResolve({ filter: /^libmime$/ }, () => ({
+        path: canonicalLibmime,
+      }));
+    }
+    if (canonicalLibbase64) {
+      build.onResolve({ filter: /^libbase64$/ }, () => ({
+        path: canonicalLibbase64,
+      }));
+    }
+    if (canonicalMailsplit) {
+      build.onResolve({ filter: /^@zone-eu\/mailsplit$/ }, () => ({
+        path: canonicalMailsplit,
+      }));
+    }
+
+    // Pomijamy wielkie tablice CJK DBCS (cp936/cp949/cp950/shiftjis/eucjp/gb18030) w iconv-lite;
+    // zachowujemy w pełni UTF-8, UTF-7 (IMAP), UTF-16, UTF-32, Windows-1250 i ISO-8859-2.
+    build.onResolve({ filter: /^\.\/dbcs-data$/ }, (args) => {
+      if (args.importer && args.importer.includes("iconv-lite")) {
+        return { path: "iconv-dbcs-empty", namespace: "tl-shim" };
+      }
+      return null;
+    });
+    build.onLoad({ filter: /^iconv-dbcs-empty$/, namespace: "tl-shim" }, () => ({
+      contents: `module.exports = {};`,
+      loader: "js",
+    }));
+
     build.onResolve({ filter: /^@mixmark-io\/domino$/ }, () => ({
       path: "domino-shim",
       namespace: "tl-shim",
@@ -50,8 +113,20 @@ const bundleSlimmingPlugin = {
       path: "encoding-jp-shim",
       namespace: "tl-shim",
     }));
-    build.onResolve({ filter: /^(html-to-text|linkify-it|tlds|socks)$/ }, (args) => ({
-      path: `noop-${args.path}`,
+    build.onResolve({ filter: /^linkify-it$/ }, () => ({
+      path: "linkify-it-shim",
+      namespace: "tl-shim",
+    }));
+    build.onResolve({ filter: /^html-to-text$/ }, () => ({
+      path: "html-to-text-shim",
+      namespace: "tl-shim",
+    }));
+    build.onResolve({ filter: /^tlds$/ }, () => ({
+      path: "tlds-shim",
+      namespace: "tl-shim",
+    }));
+    build.onResolve({ filter: /^socks$/ }, () => ({
+      path: "socks-shim",
       namespace: "tl-shim",
     }));
 
@@ -99,17 +174,68 @@ const bundleSlimmingPlugin = {
       loader: "js",
     }));
 
-    build.onLoad({ filter: /^noop-/, namespace: "tl-shim" }, () => ({
+    build.onLoad({ filter: /^linkify-it-shim$/, namespace: "tl-shim" }, () => ({
       contents: `
-        function Noop() {
-          this.tlds = () => this;
-          this.match = () => null;
-          this.test = () => false;
+        class REBuilder {
+          constructor() {}
+          build() { return {}; }
         }
-        Noop.convert = (html) => String(html || "").replace(/<[^>]+>/g, " ");
-        Noop.htmlToText = Noop.convert;
-        Noop.SocksClient = { createConnection: async () => { throw new Error("SOCKS proxy disabled"); } };
-        module.exports = Noop;
+        class LinkifyIt {
+          constructor() {
+            this.re = { src_ZPCc: "" };
+          }
+          tlds() { return this; }
+          add() { return this; }
+          set() { return this; }
+          normalize(match) { return match; }
+          match() { return null; }
+          test() { return false; }
+          pretest() { return false; }
+          testSchemaAt() { return 0; }
+        }
+        function createLinkifyIt(schemas, options) {
+          return new LinkifyIt(schemas, options);
+        }
+        createLinkifyIt.LinkifyIt = LinkifyIt;
+        createLinkifyIt.REBuilder = REBuilder;
+        createLinkifyIt.default = createLinkifyIt;
+        module.exports = createLinkifyIt;
+      `,
+      loader: "js",
+    }));
+
+    build.onLoad({ filter: /^html-to-text-shim$/, namespace: "tl-shim" }, () => ({
+      contents: `
+        function htmlToText(html) {
+          return String(html || "")
+            .replace(/<style[\\s\\S]*?<\\/style>/gi, " ")
+            .replace(/<script[\\s\\S]*?<\\/script>/gi, " ")
+            .replace(/<br\\s*\\/?>/gi, "\\n")
+            .replace(/<\\/(p|div|li|tr|h[1-6])>/gi, "\\n")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/[ \\t]+/g, " ")
+            .replace(/\\n{3,}/g, "\\n\\n")
+            .trim();
+        }
+        module.exports = { htmlToText, convert: htmlToText, default: { htmlToText, convert: htmlToText } };
+      `,
+      loader: "js",
+    }));
+
+    build.onLoad({ filter: /^tlds-shim$/, namespace: "tl-shim" }, () => ({
+      contents: `module.exports = [];`,
+      loader: "js",
+    }));
+
+    build.onLoad({ filter: /^socks-shim$/, namespace: "tl-shim" }, () => ({
+      contents: `
+        module.exports = {
+          SocksClient: {
+            createConnection: async () => {
+              throw new Error("SOCKS proxy disabled in Obsidian Desktop build");
+            }
+          }
+        };
       `,
       loader: "js",
     }));

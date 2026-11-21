@@ -1,4 +1,4 @@
-import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
+import { initializeApp, getApps, type FirebaseApp, type FirebaseOptions } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
@@ -8,7 +8,6 @@ import {
   type Auth,
   type User,
 } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
 
 export const GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
@@ -18,10 +17,56 @@ let firebaseAuth: Auth | null = null;
 // Token dostępu Google OAuth2 przechowywany WYŁĄCZNIE w pamięci operacyjnej (nigdy w localStorage/sessionStorage)
 let inMemoryGmailAccessToken: string | null = null;
 
-function getFirebaseAuth(): Auth {
+// Opcjonalne ładowanie lokalnego pliku firebase-applet-config.json (ignorowanego przez Git)
+// z bezpiecznym fallbackiem na zmienne środowiskowe VITE_FIREBASE_*.
+const localFirebaseConfigModules = import.meta.glob<Record<string, unknown>>(
+  '../../firebase-applet-config.json',
+  { eager: true, import: 'default' }
+);
+
+function resolveFirebaseConfig(): FirebaseOptions | null {
+  const fromFile = Object.values(localFirebaseConfigModules)[0];
+  if (fromFile && typeof fromFile.apiKey === 'string' && fromFile.apiKey.trim()) {
+    return {
+      apiKey: String(fromFile.apiKey),
+      authDomain: typeof fromFile.authDomain === 'string' ? fromFile.authDomain : undefined,
+      projectId: typeof fromFile.projectId === 'string' ? fromFile.projectId : undefined,
+      storageBucket: typeof fromFile.storageBucket === 'string' ? fromFile.storageBucket : undefined,
+      messagingSenderId:
+        typeof fromFile.messagingSenderId === 'string' ? fromFile.messagingSenderId : undefined,
+      appId: typeof fromFile.appId === 'string' ? fromFile.appId : undefined,
+    };
+  }
+
+  const envApiKey = (import.meta.env.VITE_FIREBASE_API_KEY as string | undefined)?.trim();
+  if (envApiKey) {
+    return {
+      apiKey: envApiKey,
+      authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined)?.trim() || undefined,
+      projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined)?.trim() || undefined,
+      storageBucket:
+        (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string | undefined)?.trim() || undefined,
+      messagingSenderId:
+        (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string | undefined)?.trim() || undefined,
+      appId: (import.meta.env.VITE_FIREBASE_APP_ID as string | undefined)?.trim() || undefined,
+    };
+  }
+
+  return null;
+}
+
+export function isGoogleAuthConfigured(): boolean {
+  return resolveFirebaseConfig() !== null;
+}
+
+function getFirebaseAuth(): Auth | null {
+  const config = resolveFirebaseConfig();
+  if (!config) {
+    return null;
+  }
   if (!firebaseApp) {
     const existing = getApps();
-    firebaseApp = existing.length > 0 ? existing[0] : initializeApp(firebaseConfig);
+    firebaseApp = existing.length > 0 ? existing[0] : initializeApp(config);
   }
   if (!firebaseAuth) {
     firebaseAuth = getAuth(firebaseApp);
@@ -58,6 +103,16 @@ export interface GmailLiveDiagnostics {
 
 export function subscribeGoogleAuth(callback: (state: GoogleSessionState) => void): () => void {
   const auth = getFirebaseAuth();
+  if (!auth) {
+    callback({
+      signedIn: false,
+      email: null,
+      displayName: null,
+      photoURL: null,
+      hasGmailToken: false,
+    });
+    return () => {};
+  }
   return onAuthStateChanged(auth, (user: User | null) => {
     if (!user) {
       inMemoryGmailAccessToken = null;
@@ -83,6 +138,11 @@ export function subscribeGoogleAuth(callback: (state: GoogleSessionState) => voi
 
 export async function signInWithGoogleGmail(): Promise<GoogleSessionState> {
   const auth = getFirebaseAuth();
+  if (!auth) {
+    throw new Error(
+      'Logowanie Google w przeglądarce wymaga lokalnego pliku firebase-applet-config.json (skopiuj z firebase-applet-config.example.json) lub zmiennych VITE_FIREBASE_* w .env.'
+    );
+  }
   const provider = new GoogleAuthProvider();
   provider.addScope(GMAIL_READONLY_SCOPE);
   provider.setCustomParameters({
@@ -105,6 +165,7 @@ export async function signInWithGoogleGmail(): Promise<GoogleSessionState> {
 export async function signOutGoogle(): Promise<void> {
   const auth = getFirebaseAuth();
   inMemoryGmailAccessToken = null;
+  if (!auth) return;
   await signOut(auth);
 }
 

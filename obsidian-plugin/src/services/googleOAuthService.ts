@@ -30,10 +30,8 @@ function openSystemBrowser(url: string): void {
 
 /**
  * Logowanie do konta Google przez przeglądarkę systemową w Obsidian Desktop (RFC 8252 + OAuth 2.0 PKCE):
+ * - Obsługuje wielokontowość przez opcjonalny `accountId` (domyślnie "default").
  * - Uruchamia tymczasowy serwer callback wyłącznie na 127.0.0.1 na losowym porcie.
- * - Otwiera prawdziwą przeglądarkę na accounts.google.com z losowym state i PKCE S256.
- * - Wymienia kod autoryzacyjny na access_token + refresh_token i szyfruje je w SecretService.
- * - Automatycznie odświeża access_token przed wygaśnięciem (XOAUTH2 dla imap.gmail.com i smtp.gmail.com).
  */
 export class GoogleOAuthService {
   private secretService: SecretService;
@@ -42,7 +40,11 @@ export class GoogleOAuthService {
     this.secretService = secretService;
   }
 
-  async signInViaBrowser(clientId: string, timeoutMs = 120_000): Promise<GoogleOAuthTokenBundle> {
+  async signInViaBrowser(
+    clientId: string,
+    timeoutMs = 120_000,
+    accountId = "default"
+  ): Promise<GoogleOAuthTokenBundle> {
     const trimmedClientId = clientId.trim();
     if (!trimmedClientId) {
       throw new Error(
@@ -115,12 +117,15 @@ export class GoogleOAuthService {
       scope: tokenJson.scope,
     };
 
-    await this.secretService.setGoogleOAuthTokens(bundle);
+    await this.secretService.setGoogleOAuthTokens(bundle, accountId);
     return bundle;
   }
 
-  async getValidAccessToken(clientId: string): Promise<{ accessToken: string; email: string }> {
-    const stored = await this.secretService.getGoogleOAuthTokens();
+  async getValidAccessToken(
+    clientId: string,
+    accountId = "default"
+  ): Promise<{ accessToken: string; email: string }> {
+    const stored = await this.secretService.getGoogleOAuthTokens(accountId);
     if (!stored || !stored.accessToken) {
       throw new Error(
         "Brak aktywnej sesji Google OAuth2. Kliknij „Zaloguj przez Google (przeglądarka)” w ustawieniach poczty."
@@ -167,12 +172,12 @@ export class GoogleOAuthService {
       accessToken: json.access_token,
       expiresAt: Date.now() + Math.max(60, (json.expires_in || 3600) - 60) * 1000,
     };
-    await this.secretService.setGoogleOAuthTokens(updated);
+    await this.secretService.setGoogleOAuthTokens(updated, accountId);
     return { accessToken: updated.accessToken, email: updated.email };
   }
 
-  async signOut(): Promise<void> {
-    await this.secretService.clearGoogleOAuthTokens();
+  async signOut(accountId = "default"): Promise<void> {
+    await this.secretService.clearGoogleOAuthTokens(accountId);
   }
 
   private listenForAuthCode(

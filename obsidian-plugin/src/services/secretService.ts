@@ -40,6 +40,8 @@ const DEVICE_KEY_FILENAME = ".thunder-look-device.key";
  */
 export class SecretService {
   private app: App;
+  private electronSafeStorageChecked = false;
+  private electronSafeStorageCache: ElectronSafeStorageLike | null = null;
 
   constructor(app: App) {
     this.app = app;
@@ -59,6 +61,10 @@ export class SecretService {
   }
 
   private getElectronSafeStorage(): ElectronSafeStorageLike | null {
+    if (this.electronSafeStorageChecked) {
+      return this.electronSafeStorageCache;
+    }
+    this.electronSafeStorageChecked = true;
     try {
       const req = (window as unknown as { require?: (id: string) => unknown }).require;
       if (typeof req !== "function") return null;
@@ -74,6 +80,7 @@ export class SecretService {
         typeof storage.decryptString === "function" &&
         storage.isEncryptionAvailable()
       ) {
+        this.electronSafeStorageCache = storage;
         return storage;
       }
     } catch {
@@ -204,13 +211,21 @@ export class SecretService {
     }
 
     const safe = this.getElectronSafeStorage();
+    let storedWithSafeStorage = false;
     if (safe) {
-      const encBuf = safe.encryptString(value);
-      this.app.saveLocalStorage(
-        `${ENCRYPTED_LOCAL_PREFIX}${key}`,
-        `safeStorage:${encBuf.toString("base64")}`
-      );
-    } else {
+      try {
+        const encBuf = safe.encryptString(value);
+        this.app.saveLocalStorage(
+          `${ENCRYPTED_LOCAL_PREFIX}${key}`,
+          `safeStorage:${encBuf.toString("base64")}`
+        );
+        storedWithSafeStorage = true;
+      } catch {
+        // Fallback na AES-256-GCM poniżej
+      }
+    }
+
+    if (!storedWithSafeStorage) {
       const encAes = this.encryptWithDeviceAes(value);
       this.app.saveLocalStorage(`${ENCRYPTED_LOCAL_PREFIX}${key}`, encAes);
     }
@@ -241,20 +256,38 @@ export class SecretService {
     }
   }
 
-  async getMailPassword(): Promise<string> {
-    return this.getSecret(SECRET_KEY_MAIL_PASSWORD, LEGACY_SECRET_KEY_MAIL_PASSWORD);
+  private mailPasswordKey(accountId?: string): string {
+    const id = (accountId || "default").trim();
+    return id === "default" ? SECRET_KEY_MAIL_PASSWORD : `${SECRET_KEY_MAIL_PASSWORD}:${id}`;
   }
 
-  async setMailPassword(password: string): Promise<void> {
-    await this.setSecret(SECRET_KEY_MAIL_PASSWORD, password);
+  private googleOAuthKey(accountId?: string): string {
+    const id = (accountId || "default").trim();
+    return id === "default" ? SECRET_KEY_GOOGLE_OAUTH : `${SECRET_KEY_GOOGLE_OAUTH}:${id}`;
   }
 
-  async clearMailPassword(): Promise<void> {
-    await this.clearSecret(SECRET_KEY_MAIL_PASSWORD, LEGACY_SECRET_KEY_MAIL_PASSWORD);
+  async getMailPassword(accountId?: string): Promise<string> {
+    const isDefault = !accountId || accountId === "default";
+    return this.getSecret(
+      this.mailPasswordKey(accountId),
+      isDefault ? LEGACY_SECRET_KEY_MAIL_PASSWORD : undefined
+    );
   }
 
-  async getGoogleOAuthTokens(): Promise<GoogleOAuthTokenBundle | null> {
-    const raw = await this.getSecret(SECRET_KEY_GOOGLE_OAUTH);
+  async setMailPassword(password: string, accountId?: string): Promise<void> {
+    await this.setSecret(this.mailPasswordKey(accountId), password);
+  }
+
+  async clearMailPassword(accountId?: string): Promise<void> {
+    const isDefault = !accountId || accountId === "default";
+    await this.clearSecret(
+      this.mailPasswordKey(accountId),
+      isDefault ? LEGACY_SECRET_KEY_MAIL_PASSWORD : undefined
+    );
+  }
+
+  async getGoogleOAuthTokens(accountId?: string): Promise<GoogleOAuthTokenBundle | null> {
+    const raw = await this.getSecret(this.googleOAuthKey(accountId));
     if (!raw) return null;
     try {
       const parsed = JSON.parse(raw) as Partial<GoogleOAuthTokenBundle>;
@@ -273,11 +306,11 @@ export class SecretService {
     return null;
   }
 
-  async setGoogleOAuthTokens(tokens: GoogleOAuthTokenBundle): Promise<void> {
-    await this.setSecret(SECRET_KEY_GOOGLE_OAUTH, JSON.stringify(tokens));
+  async setGoogleOAuthTokens(tokens: GoogleOAuthTokenBundle, accountId?: string): Promise<void> {
+    await this.setSecret(this.googleOAuthKey(accountId), JSON.stringify(tokens));
   }
 
-  async clearGoogleOAuthTokens(): Promise<void> {
-    await this.clearSecret(SECRET_KEY_GOOGLE_OAUTH);
+  async clearGoogleOAuthTokens(accountId?: string): Promise<void> {
+    await this.clearSecret(this.googleOAuthKey(accountId));
   }
 }

@@ -31,15 +31,19 @@ const FORBIDDEN_VOID_TAGS = ["base", "meta", "link", "input", "button", "textare
  * 3. Domyślnie blokuje zdalne obrazki i piksele śledzące (src, srcset, background, CSS url)
  *    oraz generuje restrykcyjną politykę Content-Security-Policy bez wykonywania skryptów.
  */
+export type EmailHtmlThemeMode = "original-light" | "force-dark";
+
 export function sanitizeEmailHtml(
   rawHtml: string,
   options: {
     blockRemoteImages: boolean;
     darkMode?: boolean;
+    themeMode?: EmailHtmlThemeMode;
     domSanitizer?: ExternalDomSanitizer;
   }
 ): SanitizedEmailHtmlResult {
-  const { blockRemoteImages, darkMode = false, domSanitizer } = options;
+  const { blockRemoteImages, darkMode = false, themeMode, domSanitizer } = options;
+  const effectiveDark = themeMode ? themeMode === "force-dark" : darkMode;
   let html = String(rawHtml || "").replace(/\0/g, "");
 
   // Warstwa 1: DOMPurify jeśli dostępny (Obsidian Electron / przeglądarka)
@@ -75,7 +79,6 @@ export function sanitizeEmailHtml(
   );
 
   // Neutralizuj niebezpieczne schematy URI (javascript:, vbscript:, file:, data:text/html, data:image/svg+xml)
-  // Oddzielna obsługa podwójnych cudzysłowów, pojedynczych cudzysłowów oraz wartości bez cudzysłowów (odporne na zagnieżdżone cudzysłowy)
   const dangerousScheme = "(?:javascript|vbscript|file|data\\s*:\\s*(?:text\\/html|application\\/|image\\/svg\\+xml))";
   html = html
     .replace(
@@ -118,7 +121,7 @@ export function sanitizeEmailHtml(
       }
     );
 
-    // Zablokuj zdalne obrazy <img src="http..."> oraz srcset="http..." bez kopiowania surowych atrybutów!
+    // Zablokuj zdalne obrazy <img src="http..."> oraz srcset="http..."
     html = html.replace(/<img\b([^>]*)>/gi, (fullTag, attrs: string) => {
       const hasRemoteSrc = /\bsrc\s*=\s*(?:"\s*https?:\/\/[^"]*"|'\s*https?:\/\/[^']*'|https?:\/\/[^\s>]+)/i.test(
         attrs
@@ -132,7 +135,7 @@ export function sanitizeEmailHtml(
 
       if (hasRemoteSrc || hasRemoteSrcset || hasUnsafeData) {
         blockedRemoteImagesCount++;
-        return `<span data-tl-blocked-img="true" style="display:inline-block;padding:2px 6px;border:1px dashed #888;border-radius:3px;font-size:11px;color:#777;">[Zablokowany obraz zdalny]</span>`;
+        return `<span data-tl-blocked-img="true" style="display:inline-block;padding:2px 6px;border:1px dashed #9ca3af;border-radius:4px;font-size:11px;color:#6b7280;">[Zablokowany obraz zdalny]</span>`;
       }
       return fullTag;
     });
@@ -147,15 +150,26 @@ export function sanitizeEmailHtml(
     });
   }
 
-  // Wymuś bezpieczne linki (target="_blank" + rel="noopener noreferrer")
+  // Wymuś bezpieczne linki (target="_blank" + rel="noopener noreferrer" + anty-phishingowy tooltip title z pełnym URL)
   html = html.replace(/<a\b([^>]*)>/gi, (_m, attrs: string) => {
     const cleaned = attrs
       .replace(/\starget\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
       .replace(/\srel\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
-    return `<a${cleaned} target="_blank" rel="noopener noreferrer">`;
+    const hasTitle = /\stitle\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i.test(cleaned);
+    const hrefMatch = cleaned.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    const rawHref = (hrefMatch?.[1] ?? hrefMatch?.[2] ?? hrefMatch?.[3] ?? "").trim();
+    let titleAttr = "";
+    if (!hasTitle && rawHref && rawHref !== "#") {
+      const escapedHref = rawHref
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      titleAttr = ` title="${escapedHref}"`;
+    }
+    return `<a${cleaned}${titleAttr} target="_blank" rel="noopener noreferrer">`;
   });
 
-  // Ścisła polityka CSP: brak skryptów, obiektów, formularzy, base-uri; domyślnie img-src 'none' (lub bezpieczne cid:/raster data tylko jeśli występują)
   const hasSafeInlineDataImg =
     /<img\b[^>]*src\s*=\s*["']data:image\/(?:png|jpeg|jpg|gif|webp);base64,/i.test(html);
   const hasCidImg = /<img\b[^>]*src\s*=\s*["']cid:/i.test(html);
@@ -172,10 +186,30 @@ export function sanitizeEmailHtml(
 
   const cspHeader = `default-src 'none'; script-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; img-src ${imgSrcPolicy}; style-src 'unsafe-inline';`;
 
-  const bgColor = darkMode ? "#181A20" : "#ffffff";
-  const textColor = darkMode ? "#E6E8EF" : "#1f2328";
-  const borderColor = darkMode ? "#2B2E3B" : "#d0d7de";
-  const linkColor = darkMode ? "#a78bfa" : "#5b21b6";
+  const outerBg = effectiveDark ? "#13151a" : "#f3f4f6";
+  const cardBg = effectiveDark ? "#1b1e26" : "#ffffff";
+  const textColor = effectiveDark ? "#e5e7eb" : "#1f2328";
+  const linkColor = effectiveDark ? "#a78bfa" : "#4f46e5";
+  const cardShadow = effectiveDark
+    ? "0 4px 20px rgba(0, 0, 0, 0.35)"
+    : "0 2px 12px rgba(15, 23, 42, 0.08)";
+
+  const darkOverrides = effectiveDark
+    ? `
+  .tl-mail-card, .tl-mail-card * {
+    color: ${textColor} !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
+  }
+  .tl-mail-card [style*="background"],
+  .tl-mail-card table,
+  .tl-mail-card td,
+  .tl-mail-card th,
+  .tl-mail-card div {
+    background-color: transparent !important;
+  }
+  .tl-mail-card a { color: ${linkColor} !important; }
+  `
+    : "";
 
   const wrapped = `<!doctype html>
 <html>
@@ -183,14 +217,64 @@ export function sanitizeEmailHtml(
 <meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="${cspHeader}" />
 <style>
-  body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px; line-height: 1.55; color: ${textColor}; background: ${bgColor}; margin: 12px; word-wrap: break-word; }
-  table { border-collapse: collapse; max-width: 100%; }
-  td, th { border: 1px solid ${borderColor}; padding: 4px 8px; }
-  img { max-width: 100%; height: auto; }
-  a { color: ${linkColor}; }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    color-scheme: ${effectiveDark ? "dark" : "light"};
+    background: ${outerBg};
+    color: ${textColor};
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    padding: 16px;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+  }
+  .tl-mail-card {
+    max-width: 920px;
+    width: 100%;
+    margin: 0 auto;
+    background: ${cardBg};
+    border-radius: 10px;
+    padding: 20px 24px;
+    box-shadow: ${cardShadow};
+    overflow-x: auto;
+  }
+  table {
+    border-collapse: collapse;
+    border: 0;
+    max-width: 100%;
+  }
+  td, th {
+    border: 0;
+    vertical-align: top;
+  }
+  img {
+    max-width: 100%;
+    height: auto;
+  }
+  a {
+    color: ${linkColor};
+  }
+  blockquote {
+    margin: 8px 0;
+    padding-left: 12px;
+    border-left: 3px solid ${effectiveDark ? "#4b5563" : "#d1d5db"};
+    color: ${effectiveDark ? "#9ca3af" : "#4b5563"};
+  }
+  pre, code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    white-space: pre-wrap;
+  }
+  ${darkOverrides}
 </style>
 </head>
-<body>${html}</body>
+<body><div class="tl-mail-card">${html}</div></body>
 </html>`;
 
   return {
