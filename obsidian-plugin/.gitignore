@@ -1,7 +1,9 @@
 node_modules/
-dist/
-data.json
 .env
-.gemini/
+.env.local
+data.json
 .hotreload
 *.log
+*.tmp
+~$*
+.DS_Store

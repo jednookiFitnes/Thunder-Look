@@ -5,10 +5,16 @@ import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const packageRoot = path.resolve(__dirname, '..');
+// Obsługa zarówno uruchomienia z src/ (tsx), jak i z dist/mcp-cli/src/ (node)
+const packageRoot = __dirname.includes(`${path.sep}dist${path.sep}`)
+  ? path.resolve(__dirname, '..', '..', '..')
+  : path.resolve(__dirname, '..');
 
 // Ładuj .env bez wypisywania czegokolwiek na stdout (krytyczne dla MCP stdio)
-dotenv.config({ path: path.resolve(packageRoot, '.env'), quiet: true } as dotenv.DotenvConfigOptions);
+dotenv.config({
+  path: path.resolve(packageRoot, '.env'),
+  quiet: true,
+} as dotenv.DotenvConfigOptions);
 
 export type AnalysisMode = 'suggest' | 'auto';
 export type PriorityLevel = 'high' | 'medium' | 'low';
@@ -24,6 +30,7 @@ export interface CategoryRule {
   vaultSubfolder: string;
   defaultPriority: PriorityLevel;
   keywords: string[];
+  regexPattern?: string;
 }
 
 export interface AiPolicyConfig {
@@ -36,6 +43,7 @@ export interface AiPolicyConfig {
     optInVaultSavingOnly: boolean;
     saveEmlCopy: boolean;
     stripQuotesForAi: boolean;
+    requireExplicitConfirmationForMutations: boolean;
   };
   analyses: {
     categorization: AnalysisRule;
@@ -54,6 +62,7 @@ export interface AppConfig {
     host: string;
     port: number;
     secure: boolean;
+    strictTls: boolean;
     user: string;
     password: string;
     allowlistFolder: string;
@@ -62,6 +71,7 @@ export interface AppConfig {
     host: string;
     port: number;
     secure: boolean;
+    strictTls: boolean;
     user: string;
     password: string;
     fromName: string;
@@ -76,7 +86,7 @@ export interface AppConfig {
 
 export const DEFAULT_POLICY: AiPolicyConfig = {
   version: '1.0.0',
-  description: 'Domyślna polityka Read-Only dla agentów AI (bez kluczy API).',
+  description: 'Domyślna polityka Read-Only Thunder Look dla agentów AI (zero kluczy API).',
   security: {
     allowImapMove: false,
     allowSmtpSend: false,
@@ -84,6 +94,7 @@ export const DEFAULT_POLICY: AiPolicyConfig = {
     optInVaultSavingOnly: true,
     saveEmlCopy: false,
     stripQuotesForAi: true,
+    requireExplicitConfirmationForMutations: true,
   },
   analyses: {
     categorization: { enabled: true, mode: 'suggest' },
@@ -130,28 +141,37 @@ function parseBool(value: string | undefined, fallback: boolean): boolean {
 }
 
 export function loadAppConfig(): AppConfig {
-  const envPolicyPath = process.env.TRINITEC_POLICY_PATH;
-  const resolvedPolicyPath = envPolicyPath
-    ? path.isAbsolute(envPolicyPath)
+  const envPolicyPath = process.env.THUNDER_LOOK_POLICY_PATH || process.env.TRINITEC_POLICY_PATH;
+  let resolvedPolicyPath: string;
+  if (envPolicyPath) {
+    resolvedPolicyPath = path.isAbsolute(envPolicyPath)
       ? envPolicyPath
-      : path.resolve(packageRoot, envPolicyPath)
-    : path.resolve(packageRoot, 'trinitec-ai-policy.json');
+      : path.resolve(packageRoot, envPolicyPath);
+  } else {
+    const localPolicy = path.resolve(packageRoot, 'ai-policy.json');
+    const examplePolicy = path.resolve(packageRoot, 'ai-policy.example.json');
+    resolvedPolicyPath = fs.existsSync(localPolicy) ? localPolicy : examplePolicy;
+  }
+
+  const strictTls = parseBool(process.env.STRICT_TLS_VERIFICATION, true);
 
   return {
     vaultPath: (process.env.OBSIDIAN_VAULT_PATH || '').trim(),
     policyPath: resolvedPolicyPath,
     imap: {
-      host: process.env.IMAP_HOST || 'imap.roundcube.pl',
+      host: process.env.IMAP_HOST || 'trinitec.pl',
       port: Number(process.env.IMAP_PORT || 993),
       secure: parseBool(process.env.IMAP_SECURE, true),
+      strictTls,
       user: process.env.MAIL_USER || '',
       password: process.env.MAIL_PASSWORD || '',
       allowlistFolder: (process.env.IMAP_ALLOWLIST_FOLDER || '').trim(),
     },
     smtp: {
-      host: process.env.SMTP_HOST || 'smtp.roundcube.pl',
+      host: process.env.SMTP_HOST || process.env.IMAP_HOST || 'trinitec.pl',
       port: Number(process.env.SMTP_PORT || 465),
       secure: parseBool(process.env.SMTP_SECURE, true),
+      strictTls,
       user: process.env.MAIL_USER || '',
       password: process.env.MAIL_PASSWORD || '',
       fromName: process.env.MAIL_FROM_NAME || 'Piotr Świerk',
@@ -165,43 +185,52 @@ export function loadAppConfig(): AppConfig {
   };
 }
 
+export function validateAiPolicyObject(parsed: unknown): AiPolicyConfig {
+  if (!parsed || typeof parsed !== 'object') {
+    return DEFAULT_POLICY;
+  }
+  const obj = parsed as Partial<AiPolicyConfig>;
+  return {
+    ...DEFAULT_POLICY,
+    ...obj,
+    security: {
+      ...DEFAULT_POLICY.security,
+      ...(obj.security || {}),
+    },
+    analyses: {
+      categorization: {
+        ...DEFAULT_POLICY.analyses.categorization,
+        ...(obj.analyses?.categorization || {}),
+      },
+      folderRouting: {
+        ...DEFAULT_POLICY.analyses.folderRouting,
+        ...(obj.analyses?.folderRouting || {}),
+      },
+      taskExtraction: {
+        ...DEFAULT_POLICY.analyses.taskExtraction,
+        ...(obj.analyses?.taskExtraction || {}),
+      },
+      prioritization: {
+        ...DEFAULT_POLICY.analyses.prioritization,
+        ...(obj.analyses?.prioritization || {}),
+      },
+    },
+    categories:
+      Array.isArray(obj.categories) && obj.categories.length > 0
+        ? obj.categories
+        : DEFAULT_POLICY.categories,
+  };
+}
+
 export function loadAiPolicy(config: AppConfig): AiPolicyConfig {
   try {
     if (fs.existsSync(config.policyPath)) {
       const raw = fs.readFileSync(config.policyPath, 'utf8');
-      const parsed = JSON.parse(raw) as Partial<AiPolicyConfig>;
-      return {
-        ...DEFAULT_POLICY,
-        ...parsed,
-        security: {
-          ...DEFAULT_POLICY.security,
-          ...(parsed.security || {}),
-        },
-        analyses: {
-          categorization: {
-            ...DEFAULT_POLICY.analyses.categorization,
-            ...(parsed.analyses?.categorization || {}),
-          },
-          folderRouting: {
-            ...DEFAULT_POLICY.analyses.folderRouting,
-            ...(parsed.analyses?.folderRouting || {}),
-          },
-          taskExtraction: {
-            ...DEFAULT_POLICY.analyses.taskExtraction,
-            ...(parsed.analyses?.taskExtraction || {}),
-          },
-          prioritization: {
-            ...DEFAULT_POLICY.analyses.prioritization,
-            ...(parsed.analyses?.prioritization || {}),
-          },
-        },
-        categories: Array.isArray(parsed.categories) && parsed.categories.length > 0
-          ? parsed.categories
-          : DEFAULT_POLICY.categories,
-      };
+      const parsed = JSON.parse(raw) as unknown;
+      return validateAiPolicyObject(parsed);
     }
   } catch (err) {
-    console.error('[trinitec-mail] Błąd odczytu trinitec-ai-policy.json, używam bezpiecznej polityki Read-Only:', err);
+    console.error('[thunder-look-mcp] Błąd odczytu pliku polityki AI, używam Read-Only:', err);
   }
   return DEFAULT_POLICY;
 }

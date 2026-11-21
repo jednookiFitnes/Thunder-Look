@@ -1,7 +1,11 @@
-import { ImapMessageHeader } from "../types";
+import { ImapFolderSummary, ImapMessageHeader, ParsedEmailMessage } from "../types";
 
-const DB_NAME = "trinitec-mail-cache-v1";
+const DB_NAME = "thunder-look-cache-v2";
+const DB_VERSION = 2;
 const STORE_FOLDERS = "folderHeaders";
+const STORE_FOLDER_LIST = "folderList";
+const STORE_MESSAGES = "messageBodies";
+const MAX_CACHED_MESSAGES = 80;
 
 interface CachedFolderRecord {
   folder: string;
@@ -10,11 +14,22 @@ interface CachedFolderRecord {
   headers: ImapMessageHeader[];
 }
 
+interface CachedFolderListRecord {
+  key: "all";
+  updatedAt: number;
+  folders: ImapFolderSummary[];
+}
+
+interface CachedMessageRecord {
+  key: string; // `${folder}::${uid}`
+  updatedAt: number;
+  message: Omit<ParsedEmailMessage, "rawEmlBuffer" | "attachments">;
+}
+
 /**
- * Lokalny cache IndexedDB poza katalogiem sejfu (wzorzec z Oxill Mail):
- * - Brak jakichkolwiek zapisów w synchronizowanym folderze OneDrive / Google Drive.
- * - Zgodnie z RFC 3501 każdy folder jest walidowany po UIDVALIDITY: zmiana UIDVALIDITY
- *   natychmiast unieważnia stary cache folderu, zapobiegając działaniu na błędnych UID.
+ * Lokalny cache IndexedDB poza katalogiem sejfu (poza OneDrive / Google Drive):
+ * - Przechowuje listę folderów, nagłówki (z walidacją RFC 3501 UIDVALIDITY) oraz ostatnio czytane treści.
+ * - Umożliwia przeglądanie offline oraz podgląd na żywo reguł kategoryzacji AI bez zapytań do serwera IMAP.
  */
 export class MailCacheService {
   private dbPromise: Promise<IDBDatabase> | null = null;
@@ -26,17 +41,59 @@ export class MailCacheService {
         reject(new Error("IndexedDB niedostępne w tym środowisku."));
         return;
       }
-      const req = indexedDB.open(DB_NAME, 1);
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE_FOLDERS)) {
           db.createObjectStore(STORE_FOLDERS, { keyPath: "folder" });
+        }
+        if (!db.objectStoreNames.contains(STORE_FOLDER_LIST)) {
+          db.createObjectStore(STORE_FOLDER_LIST, { keyPath: "key" });
+        }
+        if (!db.objectStoreNames.contains(STORE_MESSAGES)) {
+          db.createObjectStore(STORE_MESSAGES, { keyPath: "key" });
         }
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error || new Error("Błąd otwierania IndexedDB"));
     });
     return this.dbPromise;
+  }
+
+  async getFolderList(): Promise<ImapFolderSummary[] | null> {
+    try {
+      const db = await this.openDb();
+      return await new Promise((resolve) => {
+        const tx = db.transaction(STORE_FOLDER_LIST, "readonly");
+        const req = tx.objectStore(STORE_FOLDER_LIST).get("all");
+        req.onsuccess = () => {
+          const rec = req.result as CachedFolderListRecord | undefined;
+          resolve(rec?.folders ?? null);
+        };
+        req.onerror = () => resolve(null);
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  async setFolderList(folders: ImapFolderSummary[]): Promise<void> {
+    try {
+      const db = await this.openDb();
+      await new Promise<void>((resolve) => {
+        const tx = db.transaction(STORE_FOLDER_LIST, "readwrite");
+        const record: CachedFolderListRecord = {
+          key: "all",
+          updatedAt: Date.now(),
+          folders,
+        };
+        tx.objectStore(STORE_FOLDER_LIST).put(record);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    } catch {
+      // Cache opcjonalny
+    }
   }
 
   async getFolderHeaders(
@@ -47,15 +104,13 @@ export class MailCacheService {
       const db = await this.openDb();
       return await new Promise((resolve) => {
         const tx = db.transaction(STORE_FOLDERS, "readonly");
-        const store = tx.objectStore(STORE_FOLDERS);
-        const req = store.get(folder);
+        const req = tx.objectStore(STORE_FOLDERS).get(folder);
         req.onsuccess = () => {
           const rec = req.result as CachedFolderRecord | undefined;
           if (!rec) {
             resolve(null);
             return;
           }
-          // RFC 3501: Unieważnij cache, jeśli serwer zmienił UIDVALIDITY
           if (expectedUidValidity && rec.uidValidity !== expectedUidValidity) {
             resolve(null);
             return;
@@ -69,6 +124,33 @@ export class MailCacheService {
     }
   }
 
+  async getAllCachedHeaders(maxItems = 120): Promise<ImapMessageHeader[]> {
+    try {
+      const db = await this.openDb();
+      return await new Promise((resolve) => {
+        const tx = db.transaction(STORE_FOLDERS, "readonly");
+        const req = tx.objectStore(STORE_FOLDERS).getAll();
+        req.onsuccess = () => {
+          const records = (req.result as CachedFolderRecord[]) || [];
+          const merged: ImapMessageHeader[] = [];
+          for (const rec of records) {
+            for (const h of rec.headers) {
+              merged.push(h);
+              if (merged.length >= maxItems) {
+                resolve(merged);
+                return;
+              }
+            }
+          }
+          resolve(merged);
+        };
+        req.onerror = () => resolve([]);
+      });
+    } catch {
+      return [];
+    }
+  }
+
   async setFolderHeaders(
     folder: string,
     uidValidity: string,
@@ -78,19 +160,75 @@ export class MailCacheService {
       const db = await this.openDb();
       await new Promise<void>((resolve) => {
         const tx = db.transaction(STORE_FOLDERS, "readwrite");
-        const store = tx.objectStore(STORE_FOLDERS);
         const record: CachedFolderRecord = {
           folder,
           uidValidity,
           updatedAt: Date.now(),
           headers,
         };
-        store.put(record);
+        tx.objectStore(STORE_FOLDERS).put(record);
         tx.oncomplete = () => resolve();
         tx.onerror = () => resolve();
       });
     } catch {
-      // Cache jest opcjonalny — nie blokuje pracy wtyczki
+      // Cache opcjonalny
+    }
+  }
+
+  async cacheParsedMessage(msg: ParsedEmailMessage): Promise<void> {
+    if (!msg.folder || msg.uid === undefined) return;
+    try {
+      const db = await this.openDb();
+      const { rawEmlBuffer: _raw, attachments: _atts, ...lightMessage } = msg;
+      const record: CachedMessageRecord = {
+        key: `${msg.folder}::${msg.uid}`,
+        updatedAt: Date.now(),
+        message: lightMessage,
+      };
+      await new Promise<void>((resolve) => {
+        const tx = db.transaction(STORE_MESSAGES, "readwrite");
+        const store = tx.objectStore(STORE_MESSAGES);
+        store.put(record);
+        const allReq = store.getAll();
+        allReq.onsuccess = () => {
+          const items = (allReq.result as CachedMessageRecord[]) || [];
+          if (items.length > MAX_CACHED_MESSAGES) {
+            items.sort((a, b) => a.updatedAt - b.updatedAt);
+            const toRemove = items.slice(0, items.length - MAX_CACHED_MESSAGES);
+            for (const old of toRemove) {
+              store.delete(old.key);
+            }
+          }
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  async getCachedMessage(folder: string, uid: number): Promise<ParsedEmailMessage | null> {
+    try {
+      const db = await this.openDb();
+      return await new Promise((resolve) => {
+        const tx = db.transaction(STORE_MESSAGES, "readonly");
+        const req = tx.objectStore(STORE_MESSAGES).get(`${folder}::${uid}`);
+        req.onsuccess = () => {
+          const rec = req.result as CachedMessageRecord | undefined;
+          if (!rec) {
+            resolve(null);
+            return;
+          }
+          resolve({
+            ...rec.message,
+            attachments: [],
+          });
+        };
+        req.onerror = () => resolve(null);
+      });
+    } catch {
+      return null;
     }
   }
 

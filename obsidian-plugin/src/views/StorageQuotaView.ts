@@ -12,6 +12,7 @@ export class StorageQuotaView extends ItemView {
   private plugin: TrinitecMailPlugin;
   private report: MailboxQuotaReport | null = null;
   private loading = false;
+  private isClosed = false;
   private sortBy: SortColumn = "size";
   private sortDesc = true;
   private folderFilter = "ALL";
@@ -26,7 +27,7 @@ export class StorageQuotaView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Zajętość skrzynki IMAP";
+    return "Thunder Look — Rozmiar skrzynki";
   }
 
   getIcon(): string {
@@ -34,42 +35,56 @@ export class StorageQuotaView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    this.isClosed = false;
     this.render();
   }
 
   async onClose(): Promise<void> {
+    this.isClosed = true;
+    this.report = null;
     this.contentEl.empty();
   }
 
   async scanStorage(): Promise<void> {
+    if (this.isClosed || this.loading) return;
     this.loading = true;
     this.render();
     try {
-      this.report = await this.plugin.imapService.getMailboxStorageReport(50);
+      const rep = await this.plugin.imapService.getMailboxStorageReport(50);
+      if (this.isClosed) return;
+      this.report = rep;
     } catch (err) {
-      new Notice(`Błąd odczytu rozmiaru skrzynki IMAP: ${(err as Error).message}`);
+      if (!this.isClosed) {
+        new Notice(`Błąd odczytu rozmiaru skrzynki IMAP: ${(err as Error).message}`);
+      }
     } finally {
-      this.loading = false;
-      this.render();
+      if (!this.isClosed) {
+        this.loading = false;
+        this.render();
+      }
     }
   }
 
   private render(): void {
     const container = this.contentEl;
     container.empty();
-    const root = container.createDiv({ cls: "trinitec-mail-quota-panel" });
+    const root = container.createDiv({ cls: "tl-quota-panel" });
 
-    const topbar = root.createDiv({ cls: "trinitec-mail-topbar" });
-    topbar.createEl("h3", { text: "Podgląd zajętości skrzynki IMAP (Roundcube)" });
+    const topbar = root.createDiv({ cls: "tl-topbar" });
+    topbar.createEl("h3", { text: "Podgląd zajętości skrzynki IMAP (Thunder Look)" });
     const scanBtn = topbar.createEl("button", {
       text: this.loading ? "Skanowanie folderów..." : "Skanuj skrzynkę",
+      type: "button",
       cls: "mod-cta",
     });
-    scanBtn.onclick = () => this.scanStorage();
+    scanBtn.disabled = this.loading;
+    scanBtn.addEventListener("click", () => {
+      void this.scanStorage();
+    });
 
     if (!this.report) {
       root.createDiv({
-        cls: "trinitec-mail-status-text",
+        cls: "tl-status-text",
         text: "Kliknij „Skanuj skrzynkę”, aby odpytać serwer IMAP (GETQUOTAROOT, LIST, STATUS oraz RFC822.SIZE) bez zmieniania flag nieprzeczytanych wiadomości.",
       });
       return;
@@ -86,9 +101,9 @@ export class StorageQuotaView extends ItemView {
     });
 
     if (r.limitBytes) {
-      const bar = summary.createDiv({ cls: "trinitec-mail-quota-bar" });
+      const bar = summary.createDiv({ cls: "tl-quota-bar" });
       const fill = bar.createDiv({
-        cls: `trinitec-mail-quota-fill${
+        cls: `tl-quota-fill${
           pct >= 90
             ? " is-danger"
             : pct >= this.plugin.settings.quotaWarnPercent
@@ -99,9 +114,8 @@ export class StorageQuotaView extends ItemView {
       fill.style.width = `${Math.min(100, pct)}%`;
     }
 
-    // Tabela folderów
     root.createEl("h4", { text: "Rozmiar według folderów (kliknij folder, aby przefiltrować)" });
-    const fTable = root.createEl("table", { cls: "trinitec-mail-table" });
+    const fTable = root.createEl("table", { cls: "tl-table" });
     const fHead = fTable.createTHead().insertRow();
     fHead.createEl("th", { text: "Folder IMAP" });
     fHead.createEl("th", { text: "Wiadomości", cls: "is-num" });
@@ -112,11 +126,11 @@ export class StorageQuotaView extends ItemView {
     const fBody = fTable.createTBody();
     for (const f of r.folders) {
       const tr = fBody.insertRow();
-      tr.style.cursor = "pointer";
-      tr.onclick = () => {
+      tr.addClass("tl-clickable-row");
+      tr.addEventListener("click", () => {
         this.folderFilter = this.folderFilter === f.path ? "ALL" : f.path;
         this.render();
-      };
+      });
       tr.createEl("td", {
         text: this.folderFilter === f.path ? `▸ ${f.path}` : f.path,
       });
@@ -126,22 +140,22 @@ export class StorageQuotaView extends ItemView {
       tr.createEl("td", { text: formatBytes(f.largestMessageBytes), cls: "is-num" });
     }
 
-    // Sortowalna lista największych wiadomości
-    const msgHeaderRow = root.createDiv({ cls: "trinitec-mail-actions-row" });
+    const msgHeaderRow = root.createDiv({ cls: "tl-actions-row" });
     msgHeaderRow.createEl("h4", {
       text: "Największe wiadomości (kliknij nagłówek kolumny, aby sortować)",
     });
     if (this.folderFilter !== "ALL") {
       const clearBtn = msgHeaderRow.createEl("button", {
         text: `Wyczyść filtr (${this.folderFilter})`,
+        type: "button",
       });
-      clearBtn.onclick = () => {
+      clearBtn.addEventListener("click", () => {
         this.folderFilter = "ALL";
         this.render();
-      };
+      });
     }
 
-    const mTable = root.createEl("table", { cls: "trinitec-mail-table" });
+    const mTable = root.createEl("table", { cls: "tl-table" });
     const mHead = mTable.createTHead().insertRow();
 
     const addSortTh = (label: string, col: SortColumn, isNum = false) => {
@@ -149,14 +163,14 @@ export class StorageQuotaView extends ItemView {
         text: `${label}${this.sortBy === col ? (this.sortDesc ? " ↓" : " ↑") : ""}`,
         cls: isNum ? "is-num" : "",
       });
-      th.onclick = () => {
+      th.addEventListener("click", () => {
         if (this.sortBy === col) this.sortDesc = !this.sortDesc;
         else {
           this.sortBy = col;
           this.sortDesc = true;
         }
         this.render();
-      };
+      });
     };
 
     addSortTh("Folder", "folder");
@@ -185,8 +199,11 @@ export class StorageQuotaView extends ItemView {
       tr.createEl("td", { text: `${msg.subject} (${msg.from})` });
       tr.createEl("td", { text: formatBytes(msg.sizeBytes), cls: "is-num" });
       const actionTd = tr.createEl("td");
-      const saveBtn = actionTd.createEl("button", { text: "Zapisz / Załączniki" });
-      saveBtn.onclick = async () => {
+      const saveBtn = actionTd.createEl("button", {
+        text: "Zapisz / Załączniki",
+        type: "button",
+      });
+      saveBtn.addEventListener("click", async () => {
         try {
           const full = await this.plugin.imapService.fetchFullMessage(msg.folder, msg.uid);
           const proposal = this.plugin.aiBridge.analyzeContent(
@@ -206,7 +223,7 @@ export class StorageQuotaView extends ItemView {
         } catch (err) {
           new Notice(`Nie udało się pobrać wiadomości: ${(err as Error).message}`);
         }
-      };
+      });
     }
   }
 }

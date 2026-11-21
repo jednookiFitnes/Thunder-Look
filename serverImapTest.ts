@@ -1,9 +1,18 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import tls from 'node:tls';
+import {
+  buildPolishImapErrorHint,
+  isGmailHostname,
+  isOutlookHostname,
+  resolveServerHostFromDomain,
+  validateImapHostname,
+  validateWebImapPort,
+} from './shared/networkSecurity.js';
 
 export interface ImapProbeRequest {
   host: string;
+  serverDomain?: string;
   port: number;
   secure: boolean;
   strictTls: boolean;
@@ -13,7 +22,8 @@ export interface ImapProbeRequest {
 
 export interface ImapProbeResponse {
   ok: boolean;
-  providerDetected: 'gmail' | 'roundcube' | 'imap';
+  validationError?: boolean;
+  providerDetected: 'gmail' | 'roundcube' | 'outlook' | 'imap';
   latencyMs: number;
   host: string;
   port: number;
@@ -31,7 +41,7 @@ export interface ImapProbeResponse {
   hint?: string;
 }
 
-function isBlockedPrivateIp(ip: string): boolean {
+export function isBlockedPrivateIp(ip: string): boolean {
   if (net.isIPv4(ip)) {
     const parts = ip.split('.').map(Number);
     if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) return true;
@@ -41,6 +51,7 @@ function isBlockedPrivateIp(ip: string): boolean {
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;
     if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+    if (a === 198 && (b === 18 || b === 19)) return true; // benchmark
     if (a >= 224) return true; // multicast / reserved
     return false;
   }
@@ -49,7 +60,12 @@ function isBlockedPrivateIp(ip: string): boolean {
     const lower = ip.toLowerCase();
     if (lower === '::1' || lower === '::') return true;
     if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // ULA
-    if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) {
+    if (
+      lower.startsWith('fe8') ||
+      lower.startsWith('fe9') ||
+      lower.startsWith('fea') ||
+      lower.startsWith('feb')
+    ) {
       return true; // link-local
     }
     if (lower.startsWith('::ffff:')) {
@@ -61,50 +77,9 @@ function isBlockedPrivateIp(ip: string): boolean {
   return true;
 }
 
-function validateHostname(host: string): string | null {
-  const trimmed = host.trim().toLowerCase();
-  if (!trimmed || trimmed.length > 253) return 'Podaj poprawną nazwę hosta IMAP.';
-  if (trimmed === 'localhost' || trimmed.endsWith('.local') || trimmed.endsWith('.internal')) {
-    return 'Adresy lokalne i wewnętrzne nie są dozwolone w teście sieciowym.';
-  }
-  if (!/^[a-z0-9.-]+$/.test(trimmed)) {
-    return 'Host zawiera niedozwolone znaki.';
-  }
-  return null;
-}
-
 function quoteImapString(value: string): string {
-  const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n]/g, '');
+  const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n\0]/g, '');
   return `"${escaped}"`;
-}
-
-function buildHint(errorMsg: string, isGmail: boolean, port: number, secure: boolean): string {
-  const lower = errorMsg.toLowerCase();
-  if (
-    isGmail &&
-    (lower.includes('auth') ||
-      lower.includes('invalid credentials') ||
-      lower.includes('application-specific') ||
-      lower.includes('web login') ||
-      lower.includes('no'))
-  ) {
-    return 'Gmail wymaga 16-znakowego Hasła aplikacji Google (Konto Google → Bezpieczeństwo → Weryfikacja dwuetapowa → Hasła aplikacji) zamiast zwykłego hasła do konta. Sprawdź też, czy IMAP jest włączony w ustawieniach Gmaila.';
-  }
-  if (lower.includes('authentication') || lower.includes('login failed') || lower.includes('invalid credentials') || lower.includes('odrzuc')) {
-    return 'Serwer odrzucił login lub hasło. Upewnij się, że jako login podajesz pełny adres e-mail i aktualne hasło skrzynki.';
-  }
-  if (lower.includes('enotfound') || lower.includes('eai_again')) {
-    return 'Nie znaleziono hosta w DNS. Sprawdź literówki w adresie serwera (np. imap.roundcube.pl lub imap.gmail.com).';
-  }
-  if (lower.includes('wrong version') || lower.includes('ssl') || lower.includes('tls') || lower.includes('cert')) {
-    return port === 143 && secure
-      ? 'Port 143 korzysta z STARTTLS — wyłącz opcję „Bezpośredni SSL/TLS” lub przełącz port na 993.'
-      : 'Błąd połączenia TLS/SSL. Dla portu 993 włącz SSL/TLS, dla portu 143 użyj STARTTLS.';
-  }
-  if (lower.includes('timeout') || lower.includes('econnrefused')) {
-    return 'Upłynął limit czasu połączenia lub serwer nie nasłuchuje na podanym porcie (standard IMAP SSL: 993).';
-  }
-  return 'Zweryfikuj nazwę hosta, port (993 SSL/TLS lub 143 STARTTLS) oraz dane logowania.';
 }
 
 class ImapLineSession {
@@ -125,6 +100,11 @@ class ImapLineSession {
   private attachListeners(sock: net.Socket | tls.TLSSocket) {
     sock.on('data', (chunk: Buffer) => {
       this.buffer += chunk.toString('utf8');
+      if (this.buffer.length > 512 * 1024) {
+        this.rejectAll(new Error('Przekroczono limit bufora odpowiedzi IMAP (512 KB).'));
+        this.destroy();
+        return;
+      }
       this.flushLines();
     });
     sock.on('error', (err) => {
@@ -189,7 +169,7 @@ class ImapLineSession {
       const timer = setTimeout(() => {
         this.waiters = this.waiters.filter((w) => w !== waiter);
         reject(new Error('Przekroczono limit czasu odpowiedzi serwera IMAP (timeout).'));
-      }, timeoutMs);
+      }, Math.max(500, timeoutMs));
 
       const waiter = {
         tag,
@@ -244,23 +224,31 @@ class ImapLineSession {
 
 export async function runLiveImapProbe(req: ImapProbeRequest): Promise<ImapProbeResponse> {
   const started = Date.now();
-  const host = (req.host || '').trim();
-  const port = Number(req.port);
-  const secure = Boolean(req.secure);
+  const HARD_DEADLINE_MS = 10_000;
+  const remainingMs = () => Math.max(500, HARD_DEADLINE_MS - (Date.now() - started));
+
+  const rawHostSource = (req.host || '').trim() || (req.serverDomain || '').trim();
+  const parsed = resolveServerHostFromDomain(rawHostSource);
+  const host = parsed.host;
+  const port = Number(req.port || parsed.detectedPort || 993);
+  const secure = parsed.detectedSecure !== null && !req.host ? parsed.detectedSecure : Boolean(req.secure);
   const strictTls = req.strictTls !== false;
   const user = (req.user || '').trim();
   const password = req.password || '';
 
-  const isGmail =
-    host.toLowerCase().includes('gmail.com') || host.toLowerCase().includes('googlemail.com');
-  const providerDetected: 'gmail' | 'roundcube' | 'imap' = isGmail
+  const isGmail = isGmailHostname(host);
+  const isOutlook = isOutlookHostname(host);
+  const providerDetected: 'gmail' | 'roundcube' | 'outlook' | 'imap' = isGmail
     ? 'gmail'
-    : host.toLowerCase().includes('roundcube')
+    : isOutlook
+    ? 'outlook'
+    : host.includes('roundcube')
     ? 'roundcube'
     : 'imap';
 
-  const fail = (error: string): ImapProbeResponse => ({
+  const fail = (error: string, validationError = false): ImapProbeResponse => ({
     ok: false,
+    validationError,
     providerDetected,
     latencyMs: Date.now() - started,
     host,
@@ -276,28 +264,43 @@ export async function runLiveImapProbe(req: ImapProbeRequest): Promise<ImapProbe
     quotaUsedBytes: null,
     quotaLimitBytes: null,
     error,
-    hint: buildHint(error, isGmail, port, secure),
+    hint: buildPolishImapErrorHint(error, host, port, secure),
   });
 
-  const hostErr = validateHostname(host);
-  if (hostErr) return fail(hostErr);
+  // 1. Walidacja nazwy hosta + blokada bezpośrednich adresów prywatnych IP (ochrona SSRF)
+  const hostErr = validateImapHostname(host);
+  if (hostErr) return fail(hostErr, true);
 
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return fail('Port IMAP musi być liczbą z zakresu 1–65535 (standardowo 993 lub 143).');
+  if (net.isIP(host) && isBlockedPrivateIp(host)) {
+    return fail(
+      'Połączenie z prywatnym lub lokalnym adresem IP jest zablokowane ze względów bezpieczeństwa (ochrona SSRF).',
+      true
+    );
   }
+
+  // 2. Ścisła allowlista portów IMAP (143 / 993) — blokuje skanowanie portów przez SSRF
+  const portErr = validateWebImapPort(port);
+  if (portErr) return fail(portErr, true);
 
   if (!user || !password) {
-    return fail('Podaj login (adres e-mail) oraz hasło, aby zweryfikować uwierzytelnienie.');
+    return fail('Podaj login (adres e-mail) oraz hasło, aby zweryfikować uwierzytelnienie.', true);
   }
 
-  // Ochrona przed SSRF: sprawdź wszystkie rekordy DNS przed otwarciem gniazda
+  if (/[\r\n\0]/.test(user)) {
+    return fail('Login zawiera niedozwolone znaki sterujące.', true);
+  }
+
+  // 3. Rozwiązanie DNS + kontrola wszystkich zwracanych rekordów IP przeciwko SSRF
   let resolvedIp: string;
   try {
     const addresses = await dns.lookup(host, { all: true });
     if (!addresses.length) return fail('Nie udało się rozwiązać adresu IP serwera.');
     for (const entry of addresses) {
       if (isBlockedPrivateIp(entry.address)) {
-        return fail('Połączenie z prywatnym lub lokalnym adresem IP jest zablokowane ze względów bezpieczeństwa.');
+        return fail(
+          'Połączenie z prywatnym lub lokalnym adresem IP jest zablokowane ze względów bezpieczeństwa (ochrona SSRF).',
+          true
+        );
       }
     }
     resolvedIp = addresses[0].address;
@@ -306,13 +309,13 @@ export async function runLiveImapProbe(req: ImapProbeRequest): Promise<ImapProbe
   }
 
   let session: ImapLineSession | null = null;
-  const TIMEOUT_MS = 8000;
+  let globalKillTimer: ReturnType<typeof setTimeout> | null = null;
 
   try {
     const socket = await new Promise<net.Socket | tls.TLSSocket>((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error('Przekroczono limit czasu nawiązania połączenia (timeout 8s).'));
-      }, TIMEOUT_MS);
+        reject(new Error('Przekroczono limit czasu nawiązania połączenia (timeout).'));
+      }, Math.min(7000, remainingMs()));
 
       const onConnected = (sock: net.Socket | tls.TLSSocket) => {
         clearTimeout(timer);
@@ -343,22 +346,26 @@ export async function runLiveImapProbe(req: ImapProbeRequest): Promise<ImapProbe
     });
 
     session = new ImapLineSession(socket);
-    const greeting = await session.readGreeting(TIMEOUT_MS);
+    globalKillTimer = setTimeout(() => {
+      session?.destroy();
+    }, remainingMs());
+
+    const greeting = await session.readGreeting(remainingMs());
     if (!greeting.startsWith('* OK')) {
-      throw new Error(`Nieoczekiwana odpowiedź powitalna serwera: ${greeting}`);
+      throw new Error(`Nieoczekiwana odpowiedź powitalna serwera: ${greeting.slice(0, 120)}`);
     }
 
-    let capLines = await session.sendCommand('A001', 'CAPABILITY', TIMEOUT_MS);
+    let capLines = await session.sendCommand('A001', 'CAPABILITY', remainingMs());
     let capabilities = parseCapabilities(capLines);
 
     if (!secure && capabilities.includes('STARTTLS')) {
-      const stLines = await session.sendCommand('A002', 'STARTTLS', TIMEOUT_MS);
+      const stLines = await session.sendCommand('A002', 'STARTTLS', remainingMs());
       const stTag = stLines[stLines.length - 1] || '';
       if (!stTag.startsWith('A002 OK')) {
         throw new Error(`Nie udało się uruchomić STARTTLS: ${stTag}`);
       }
       await session.upgradeToTls(host, strictTls);
-      capLines = await session.sendCommand('A003', 'CAPABILITY', TIMEOUT_MS);
+      capLines = await session.sendCommand('A003', 'CAPABILITY', remainingMs());
       capabilities = parseCapabilities(capLines);
     }
 
@@ -366,27 +373,30 @@ export async function runLiveImapProbe(req: ImapProbeRequest): Promise<ImapProbe
     const loginLines = await session.sendCommand(
       'A004',
       `LOGIN ${quoteImapString(user)} ${quoteImapString(cleanedPassword)}`,
-      TIMEOUT_MS
+      remainingMs()
     );
     const loginResult = loginLines[loginLines.length - 1] || '';
     if (!loginResult.startsWith('A004 OK')) {
-      throw new Error(loginResult.replace(/^A004\s+(NO|BAD)\s*/i, '') || 'Odrzucono uwierzytelnienie IMAP.');
+      throw new Error(
+        loginResult.replace(/^A004\s+(NO|BAD)\s*/i, '') || 'Odrzucono uwierzytelnienie IMAP.'
+      );
     }
 
-    // Po zalogowaniu pobierz pełne rozszerzenia (np. IDLE, QUOTA, MOVE, X-GM-EXT-1)
-    const postCapLines = await session.sendCommand('A005', 'CAPABILITY', TIMEOUT_MS);
+    const postCapLines = await session.sendCommand('A005', 'CAPABILITY', remainingMs());
     const postCaps = parseCapabilities(postCapLines);
     if (postCaps.length > 0) capabilities = postCaps;
 
-    // Lista folderów i wykrycie \Sent (Roundcube Sent/INBOX.Sent lub Gmail [Gmail]/Sent Mail / Wysłane)
-    const listLines = await session.sendCommand('A006', 'LIST "" "*"', TIMEOUT_MS);
+    const listLines = await session.sendCommand('A006', 'LIST "" "*"', remainingMs());
     const { folderCount, sentFolderDetected } = parseListFolders(listLines);
 
-    // Nieinwazyjny STATUS INBOX (nie zmienia flag \Seen)
     let inboxMessages: number | null = null;
     let inboxUnseen: number | null = null;
     try {
-      const statusLines = await session.sendCommand('A007', 'STATUS "INBOX" (MESSAGES UNSEEN)', TIMEOUT_MS);
+      const statusLines = await session.sendCommand(
+        'A007',
+        'STATUS "INBOX" (MESSAGES UNSEEN)',
+        remainingMs()
+      );
       const statusLine = statusLines.find((l) => l.toUpperCase().startsWith('* STATUS'));
       if (statusLine) {
         const msgMatch = statusLine.match(/MESSAGES\s+(\d+)/i);
@@ -395,15 +405,14 @@ export async function runLiveImapProbe(req: ImapProbeRequest): Promise<ImapProbe
         if (unseenMatch) inboxUnseen = Number(unseenMatch[1]);
       }
     } catch {
-      // ignoruj
+      // opcjonalne
     }
 
-    // Opcjonalnie GETQUOTAROOT (obsługiwane przez Gmail i większość serwerów Roundcube/Dovecot)
     let quotaUsedBytes: number | null = null;
     let quotaLimitBytes: number | null = null;
     if (capabilities.includes('QUOTA')) {
       try {
-        const quotaLines = await session.sendCommand('A008', 'GETQUOTAROOT "INBOX"', TIMEOUT_MS);
+        const quotaLines = await session.sendCommand('A008', 'GETQUOTAROOT "INBOX"', remainingMs());
         const qLine = quotaLines.find((l) => /STORAGE\s+\d+\s+\d+/i.test(l));
         if (qLine) {
           const m = qLine.match(/STORAGE\s+(\d+)\s+(\d+)/i);
@@ -413,12 +422,12 @@ export async function runLiveImapProbe(req: ImapProbeRequest): Promise<ImapProbe
           }
         }
       } catch {
-        // ignoruj
+        // opcjonalne
       }
     }
 
     const tlsProtocol = session.getTlsProtocol();
-    await session.sendCommand('A009', 'LOGOUT', 3000).catch(() => {});
+    await session.sendCommand('A009', 'LOGOUT', 1500).catch(() => {});
 
     return {
       ok: true,
@@ -440,6 +449,7 @@ export async function runLiveImapProbe(req: ImapProbeRequest): Promise<ImapProbe
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   } finally {
+    if (globalKillTimer) clearTimeout(globalKillTimer);
     session?.destroy();
   }
 }

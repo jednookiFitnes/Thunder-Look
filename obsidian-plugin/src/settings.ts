@@ -19,10 +19,9 @@ export class TrinitecSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Trinitec Mail & Project Manager" });
+    containerEl.createEl("h2", { text: "Thunder Look — Autor: Piotr Świerk" });
 
-    // Podzakładki ustawień (w tym obowiązkowa z AGENTS.md zakładka „Jak używać”)
-    const tabsBar = containerEl.createDiv({ cls: "trinitec-mail-settings-tabs" });
+    const tabsBar = containerEl.createDiv({ cls: "tl-settings-tabs" });
     const tabs: Array<{ id: SettingsSubTab; label: string }> = [
       { id: "general", label: "Poczta IMAP/SMTP i Vault" },
       { id: "ai", label: "Analiza AI (MCP / CLI)" },
@@ -32,12 +31,13 @@ export class TrinitecSettingTab extends PluginSettingTab {
     for (const tab of tabs) {
       const btn = tabsBar.createEl("button", {
         text: tab.label,
-        cls: `trinitec-mail-settings-tab-btn${this.activeTab === tab.id ? " is-active" : ""}`,
+        type: "button",
+        cls: `tl-settings-tab-btn${this.activeTab === tab.id ? " is-active" : ""}`,
       });
-      btn.onclick = () => {
+      btn.addEventListener("click", () => {
         this.activeTab = tab.id;
         this.display();
-      };
+      });
     }
 
     if (this.activeTab === "general") {
@@ -50,14 +50,13 @@ export class TrinitecSettingTab extends PluginSettingTab {
   }
 
   private renderGeneralTab(containerEl: HTMLElement): void {
-    // Dedykowany komponent UI ustawień poczty (Roundcube.pl / Gmail / test połączenia)
     new EmailSettingsSection(this.plugin, containerEl, () => this.display()).render();
 
-    containerEl.createEl("h3", { text: "Zachowanie klienta poczty" });
+    containerEl.createEl("h3", { text: "Zachowanie klienta poczty i bezpieczeństwo" });
 
     new Setting(containerEl)
       .setName("Nieinwazyjny podgląd (EXAMINE / BODY.PEEK)")
-      .setDesc("Odczyt i skanowanie rozmiaru skrzynki nie oznaczają maili jako przeczytanych w Roundcube.")
+      .setDesc("Odczyt i skanowanie rozmiaru skrzynki nie oznaczają maili jako przeczytanych na serwerze.")
       .addToggle((t) =>
         t.setValue(this.plugin.settings.nonIntrusivePeek).onChange(async (v) => {
           this.plugin.settings.nonIntrusivePeek = v;
@@ -67,6 +66,7 @@ export class TrinitecSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Automatyczna kopia wysłanych w folderze Sent (IMAP APPEND)")
+      .setDesc("Dla Gmaila pomijane automatycznie (SMTP Gmaila sam zapisuje kopię w Wysłanych).")
       .addToggle((t) =>
         t.setValue(this.plugin.settings.appendSentToImap).onChange(async (v) => {
           this.plugin.settings.appendSentToImap = v;
@@ -75,7 +75,7 @@ export class TrinitecSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Blokuj zdalne obrazy i piksele śledzące w HTML")
+      .setName("Blokuj zdalne obrazy i piksele śledzące w HTML (CSP img-src 'none')")
       .addToggle((t) =>
         t.setValue(this.plugin.settings.blockRemoteImagesByDefault).onChange(async (v) => {
           this.plugin.settings.blockRemoteImagesByDefault = v;
@@ -92,7 +92,23 @@ export class TrinitecSettingTab extends PluginSettingTab {
         })
       );
 
-    containerEl.createEl("h3", { text: "Struktura Praca Vault i polityka Opt-in" });
+    new Setting(containerEl)
+      .setName("Maksymalny rozmiar zapisywanego załącznika (MB)")
+      .setDesc("Chroni sejf i dysk chmurowy przed przypadkowym zapisaniem wielkich plików (1-250 MB).")
+      .addText((t) =>
+        t
+          .setPlaceholder("25")
+          .setValue(String(this.plugin.settings.maxAttachmentSizeMb))
+          .onChange(async (v) => {
+            const n = Number(v);
+            if (Number.isFinite(n) && n >= 1 && n <= 250) {
+              this.plugin.settings.maxAttachmentSizeMb = Math.floor(n);
+              await this.plugin.saveSettings();
+            }
+          })
+      );
+
+    containerEl.createEl("h3", { text: "Struktura Vaulta i polityka Opt-in" });
 
     new Setting(containerEl)
       .setName("Katalog aktywnych projektów")
@@ -244,24 +260,32 @@ export class TrinitecSettingTab extends PluginSettingTab {
         })
       );
 
-    // Tabela kategorii AI — zgodnie z AGENTS.md edycja WYŁĄCZNIE przez pływający modal CategoryRuleModal!
-    const catHeader = containerEl.createDiv({ cls: "trinitec-mail-actions-row" });
+    const catHeader = containerEl.createDiv({ cls: "tl-actions-row" });
     catHeader.createEl("h3", { text: "Kategorie i mapowanie folderów" });
-    const addCatBtn = catHeader.createEl("button", { text: "Dodaj kategorię", cls: "mod-cta" });
-    addCatBtn.onclick = () => {
-      new CategoryRuleModal(this.app, null, async (newRule) => {
-        this.plugin.settings.aiCategories.push(newRule);
-        await this.plugin.saveSettings();
-        this.display();
-      }).open();
-    };
+    const addCatBtn = catHeader.createEl("button", {
+      text: "Dodaj kategorię",
+      type: "button",
+      cls: "mod-cta",
+    });
+    addCatBtn.addEventListener("click", () => {
+      new CategoryRuleModal(
+        this.app,
+        null,
+        async (newRule) => {
+          this.plugin.settings.aiCategories.push(newRule);
+          await this.plugin.saveSettings();
+          this.display();
+        },
+        this.plugin.cacheService
+      ).open();
+    });
 
-    const table = containerEl.createEl("table", { cls: "trinitec-mail-table" });
+    const table = containerEl.createEl("table", { cls: "tl-table" });
     const head = table.createTHead().insertRow();
     head.createEl("th", { text: "Kategoria" });
     head.createEl("th", { text: "Folder IMAP" });
     head.createEl("th", { text: "Temat Vault" });
-    head.createEl("th", { text: "Słowa kluczowe" });
+    head.createEl("th", { text: "Słowa kluczowe / Regex" });
     head.createEl("th", { text: "Akcje" });
 
     const body = table.createTBody();
@@ -270,72 +294,77 @@ export class TrinitecSettingTab extends PluginSettingTab {
       tr.createEl("td", { text: rule.label });
       tr.createEl("td", { text: rule.imapFolder });
       tr.createEl("td", { text: rule.vaultTopic });
-      tr.createEl("td", { text: rule.keywords.join(", ") });
-      const act = tr.createEl("td");
+      tr.createEl("td", {
+        text: rule.regexPattern
+          ? `${rule.keywords.join(", ")} | /${rule.regexPattern}/i`
+          : rule.keywords.join(", "),
+      });
+      const act = tr.createEl("td", { cls: "tl-actions-row" });
 
-      const editBtn = act.createEl("button", { text: "Edytuj" });
-      editBtn.onclick = () => {
-        new CategoryRuleModal(this.app, rule, async (updated) => {
-          this.plugin.settings.aiCategories = this.plugin.settings.aiCategories.map((c) =>
-            c.id === rule.id ? updated : c
-          );
-          await this.plugin.saveSettings();
-          this.display();
-        }).open();
-      };
+      const editBtn = act.createEl("button", { text: "Edytuj", type: "button" });
+      editBtn.addEventListener("click", () => {
+        new CategoryRuleModal(
+          this.app,
+          rule,
+          async (updated) => {
+            this.plugin.settings.aiCategories = this.plugin.settings.aiCategories.map((c) =>
+              c.id === rule.id ? updated : c
+            );
+            await this.plugin.saveSettings();
+            this.display();
+          },
+          this.plugin.cacheService
+        ).open();
+      });
 
-      const delBtn = act.createEl("button", { text: "Usuń" });
-      delBtn.style.marginLeft = "6px";
-      delBtn.onclick = async () => {
+      const delBtn = act.createEl("button", { text: "Usuń", type: "button" });
+      delBtn.addEventListener("click", async () => {
         this.plugin.settings.aiCategories = this.plugin.settings.aiCategories.filter(
           (c) => c.id !== rule.id
         );
         await this.plugin.saveSettings();
         this.display();
-      };
+      });
     }
   }
 
-  /**
-   * Obowiązkowa zakładka dokumentacji w języku polskim (AGENTS.md).
-   */
   private renderHowToUseTab(containerEl: HTMLElement): void {
-    containerEl.createEl("h3", { text: "Jak używać Trinitec Mail & Project Manager" });
+    containerEl.createEl("h3", { text: "Jak używać Thunder Look (autor: Piotr Świerk)" });
 
     containerEl.createEl("p", {
-      text: "Wtyczka łączy bezpośredniego klienta IMAP/SMTP (Roundcube) z bazą wiedzy Praca Vault w ścisłym trybie Opt-in: żadna wiadomość nie trafia do Twoich notatek bez Twojej wyraźnej decyzji.",
+      text: "Thunder Look łączy bezpośredniego klienta IMAP/SMTP (Roundcube z polem Serwer/Domena, Gmail przez OAuth2 w przeglądarce lub Hasło aplikacji, Outlook/Office 365) z bazą wiedzy Obsidian w ścisłym trybie Opt-in.",
     });
 
     containerEl.createEl("h4", { text: "1. Dostępne komendy w Palecie Poleceń (Ctrl + P)" });
     const cmdList = containerEl.createEl("ul");
     const commands = [
-      "Trinitec: Otwórz skrzynkę IMAP — otwiera 3-kolumnowy widok poczty (Foldery | Wątki | Podgląd z blokadą pikseli).",
-      "Trinitec: Podgląd rozmiaru skrzynki i folderów — skanuje zajętość IMAP (GETQUOTAROOT / STATUS / RFC822.SIZE) z sortowaniem największych maili.",
-      "Trinitec: Wyślij nowy e-mail (SMTP) — otwiera kompozytor z podpowiadaniem kontaktów (MRU), załącznikami z Vaulta i automatyczną kopią w Sent.",
-      "Trinitec: Parse email from clipboard — wkleja surowy e-mail ze schowka prosto do okna zapisu Opt-in.",
-      "Trinitec: Create new project — tworzy folder YY-XXX - Klient - Nazwa, notatkę główną z _base_trinitec_projekty.base#Embeded oraz podfoldery.",
-      "Trinitec: Archive active project — ustawia status: archive i bezpiecznie przenosi katalog projektu do archiwum.",
-      "Trinitec: Analizuj aktywną notatkę (AI) — kategoryzuje notatkę, określa priorytet i dopisuje wykryte zadania Obsidian Tasks.",
+      "Thunder Look: Otwórz skrzynkę IMAP — 3-kolumnowy widok poczty (Foldery | Wątki | Izolowany podgląd HTML z blokadą pikseli i trybem offline).",
+      "Thunder Look: Podgląd rozmiaru skrzynki i folderów — skanuje zajętość IMAP (GETQUOTAROOT / STATUS / RFC822.SIZE).",
+      "Thunder Look: Wyślij nowy e-mail (SMTP) — kompozytor z podpowiadaniem kontaktów MRU, podpisem, załącznikami i 5-sekundowym „Cofnij wysyłkę”.",
+      "Thunder Look: Wklej i zapisz e-mail ze schowka — parsuje surową wiadomość do okna zapisu Opt-in.",
+      "Thunder Look: Utwórz nowy projekt — tworzy strukturę katalogów projektu i notatkę główną.",
+      "Thunder Look: Zarchiwizuj aktywny projekt — ustawia status: archive i przenosi projekt do archiwum.",
+      "Thunder Look: Analizuj aktywną notatkę (AI) — kategoryzuje notatkę, ustawia priorytet i wyodrębnia zadania.",
     ];
     for (const c of commands) cmdList.createEl("li", { text: c });
 
-    containerEl.createEl("h4", { text: "2. Świadomy zapis wycinka lub załączników" });
+    containerEl.createEl("h4", { text: "2. Wątkowanie, deduplikacja i bezpieczne załączniki" });
     containerEl.createEl("p", {
-      text: "Zaznacz myszką dowolny fragment w podglądzie wiadomości i kliknij „Zapisz w Vaulcie (Opt-in)”. Wtyczka automatycznie przełączy tryb na „Wybrany fragment treści”, rozpozna projekt (po kodzie YY-XXX lub kontakcie w kontakty/), sprawdzi duplikaty po Message-ID i pozwoli wybrać: osobny plik lub dopisanie do istniejącej notatki.",
+      text: "Przy zapisie wiadomości Thunder Look sprawdza duplikaty (Message-ID i hash treści), wykrywa wcześniejsze notatki w wątku (automatyczne wikilinki) oraz domyślnie odznacza potencjalnie niebezpieczne rozszerzenia (.exe, .ps1, .js, .bat, .iso) i deduplikuje pliki po SHA-256.",
     });
 
-    containerEl.createEl("h4", { text: "3. Blok kodu w notatce projektu (```trinitec-mail```)" });
+    containerEl.createEl("h4", { text: "3. Blok kodu w notatce projektu (```thunder-look```)" });
     const pre = containerEl.createEl("pre");
     pre.createEl("code", {
-      text: "```trinitec-mail\nproject: 26-125\ntopic: Korespondencja\nlimit: 15\n```",
+      text: "```thunder-look\nproject: 26-125\ntopic: Korespondencja\nlimit: 15\n```",
     });
     containerEl.createEl("p", {
-      text: "Blok wyświetla tabelę zapisanej korespondencji projektu. W razie błędu parametrów przycisk „Edytuj blok” zawsze pozostaje dostępny.",
+      text: "Blok wyświetla żywą tabelę korespondencji (kompatybilny również ze starszą nazwą ```trinitec-mail```). W razie błędu składni przycisk „Edytuj blok” pozostaje zawsze dostępny.",
     });
 
-    containerEl.createEl("h4", { text: "4. Praca z agentem AI (Antigravity / MCP / CLI — bez kluczy API)" });
+    containerEl.createEl("h4", { text: "4. Praca z agentem AI (MCP / CLI — bez kluczy API)" });
     containerEl.createEl("p", {
-      text: "Uruchom lokalny pakiet trinitec-mail-mcp-cli (najlepiej poza OneDrive, np. w C:\\Tools\\trinitec-mail-mcp-cli\\) i wklej konfigurację stdio do Antigravity. Domyślnie serwer MCP startuje w bezpiecznym trybie Read-Only, dopóki nie włączysz uprawnień zapisu w trinitec-ai-policy.json.",
+      text: "Pakiet mcp-cli izoluje treść maili przed Prompt Injection i domyślnie uruchamia się w trybie Read-Only (plik ai-policy.example.json).",
     });
   }
 }

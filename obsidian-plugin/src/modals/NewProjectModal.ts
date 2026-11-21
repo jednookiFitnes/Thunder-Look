@@ -16,7 +16,7 @@ export class NewProjectModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h2", { text: "Kreator nowego projektu Trinitec" });
+    contentEl.createEl("h2", { text: "Kreator nowego projektu (Thunder Look)" });
 
     new Setting(contentEl)
       .setName("Numer projektu (YY-XXX)")
@@ -51,15 +51,16 @@ export class NewProjectModal extends Modal {
           .onChange((v) => (this.projectType = v as "projekt" | "oferta"))
       );
 
-    const footer = contentEl.createDiv({ cls: "trinitec-mail-modal-footer" });
-    const cancelBtn = footer.createEl("button", { text: "Anuluj" });
-    cancelBtn.onclick = () => this.close();
+    const footer = contentEl.createDiv({ cls: "tl-modal-footer" });
+    const cancelBtn = footer.createEl("button", { text: "Anuluj", type: "button" });
+    cancelBtn.addEventListener("click", () => this.close());
 
     const createBtn = footer.createEl("button", {
       text: "Utwórz projekt",
+      type: "button",
       cls: "mod-cta",
     });
-    createBtn.onclick = async () => {
+    createBtn.addEventListener("click", async () => {
       if (!this.projectCode || !this.clientName || !this.projectTitle) {
         new Notice("Uzupełnij numer projektu, klienta oraz nazwę projektu.");
         return;
@@ -77,6 +78,10 @@ export class NewProjectModal extends Modal {
       } catch (err) {
         new Notice(`Błąd tworzenia projektu: ${(err as Error).message}`);
       }
-    };
+    });
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
   }
 }

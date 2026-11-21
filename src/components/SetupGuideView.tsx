@@ -34,21 +34,21 @@ const AGENTS_MD_CHECKLIST = [
     id: 'css-modals',
     title: 'Izolacja CSS i przestronne modale',
     detail:
-      'Wszystkie selektory mają prefiks .trinitec-mail-* i korzystają ze zmiennych motywu Obsidian. Reguły kategorii edytowane są w przestronnych modalach zamiast edycji inline w tabelach.',
+      'Wszystkie selektory mają prefiks .tl-* i korzystają wyłącznie ze zmiennych motywu Obsidian. Reguły kategorii mają podgląd dopasowań na żywo i ochronę przed ReDoS.',
   },
   {
     id: 'readonly-mcp',
     title: 'Bezpieczeństwo MCP Read-Only i zero kluczy API',
     detail:
-      'trinitec-ai-policy.json domyślnie blokuje allowImapMove, allowSmtpSend i allowVaultWrite (zwraca symulację dryRun) oraz wymusza ścisły zapis Opt-in.',
+      'ai-policy.json domyślnie blokuje allowImapMove, allowSmtpSend i allowVaultWrite (zwraca dryRun), izoluje treść maila w tagach XML i wymaga jawnego userExplicitlyConfirmed.',
   },
 ];
 
 export function SetupGuideView({ onNotify }: SetupGuideViewProps) {
   const [vaultPathInput, setVaultPathInput] = useState('');
   const [mcpFolderInput, setMcpFolderInput] = useState('');
-  const [imapHostInput, setImapHostInput] = useState('imap.roundcube.pl');
-  const [smtpHostInput, setSmtpHostInput] = useState('smtp.roundcube.pl');
+  const [imapHostInput, setImapHostInput] = useState('trinitec.pl');
+  const [smtpHostInput, setSmtpHostInput] = useState('trinitec.pl');
   const [mailUserInput, setMailUserInput] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -56,20 +56,22 @@ export function SetupGuideView({ onNotify }: SetupGuideViewProps) {
     vaultPathInput.trim() || '<SCIEZKA_DO_TWOJEGO_SEJFU_OBSIDIAN_NP_ONEDRIVE>';
   const effectiveMcpDir =
     mcpFolderInput.trim() || '<SCIEZKA_DO_ROZPAKOWANEGO_FOLDERU_MCP_CLI>';
-  const effectiveServerJs = `${effectiveMcpDir.replace(/[/\\]+$/, '')}/dist/mcpServer.js`;
+  const effectiveServerJs = `${effectiveMcpDir.replace(/[/\\]+$/, '')}/dist/mcp-cli/src/mcpServer.js`;
 
   const mcpConfigJson = useMemo(() => {
     const obj = {
       mcpServers: {
-        'trinitec-mail': {
+        'thunder-look': {
           command: 'node',
           args: [effectiveServerJs],
           env: {
             OBSIDIAN_VAULT_PATH: effectiveVaultPath,
-            IMAP_HOST: imapHostInput.trim() || 'imap.roundcube.pl',
+            MAIL_SERVER: imapHostInput.trim() || 'trinitec.pl',
+            IMAP_HOST: imapHostInput.trim() || 'trinitec.pl',
             IMAP_PORT: '993',
             IMAP_SECURE: 'true',
-            SMTP_HOST: smtpHostInput.trim() || 'smtp.roundcube.pl',
+            IMAP_STRICT_TLS: 'true',
+            SMTP_HOST: smtpHostInput.trim() || 'trinitec.pl',
             SMTP_PORT: '465',
             SMTP_SECURE: 'true',
             MAIL_USER: mailUserInput.trim() || 'twoj.adres@domena.pl',
@@ -83,10 +85,12 @@ export function SetupGuideView({ onNotify }: SetupGuideViewProps) {
 
   const envSnippet = useMemo(
     () => `OBSIDIAN_VAULT_PATH="${effectiveVaultPath}"
-IMAP_HOST="${imapHostInput.trim() || 'imap.roundcube.pl'}"
+MAIL_SERVER="${imapHostInput.trim() || 'trinitec.pl'}"
+IMAP_HOST="${imapHostInput.trim() || 'trinitec.pl'}"
 IMAP_PORT="993"
 IMAP_SECURE="true"
-SMTP_HOST="${smtpHostInput.trim() || 'smtp.roundcube.pl'}"
+IMAP_STRICT_TLS="true"
+SMTP_HOST="${smtpHostInput.trim() || 'trinitec.pl'}"
 SMTP_PORT="465"
 SMTP_SECURE="true"
 MAIL_USER="${mailUserInput.trim() || 'twoj.adres@domena.pl'}"
@@ -174,13 +178,13 @@ ZASADY KRYTYCZNE:
             <button
               type="button"
               onClick={() => {
-                setImapHostInput('imap.roundcube.pl');
-                setSmtpHostInput('smtp.roundcube.pl');
-                onNotify('Ustawiono hosty Roundcube.pl dla MCP.');
+                setImapHostInput('trinitec.pl');
+                setSmtpHostInput('trinitec.pl');
+                onNotify('Ustawiono domenę Roundcube (trinitec.pl) dla MCP.');
               }}
               className="px-2.5 py-1 text-xs font-medium text-[#E6E8EF] bg-[#232631] hover:bg-[#2B2F3D] border border-[#393D4F] rounded cursor-pointer"
             >
-              Preset Roundcube.pl
+              Preset Roundcube (trinitec.pl)
             </button>
             <button
               type="button"

@@ -1,6 +1,9 @@
 import { App, Notice, TFile, TFolder, normalizePath } from "obsidian";
+import {
+  assertSafeRelativeVaultPath,
+  sanitizeFilename,
+} from "../../../shared/pathSecurity";
 import { TrinitecPluginSettings, VaultProjectMatch } from "../types";
-import { sanitizeFilename } from "../utils/textUtils";
 
 export class ProjectLifecycleService {
   private app: App;
@@ -25,25 +28,24 @@ export class ProjectLifecycleService {
     const client = sanitizeFilename(params.clientName);
     const title = sanitizeFilename(params.projectTitle);
 
-    const folderName = `${code} - ${client} - ${title}`;
-    const projectPath = normalizePath(`${this.settings.activeProjectsDir}/${folderName}`);
+    const folderName = sanitizeFilename(`${code} - ${client} - ${title}`);
+    const activeRoot = assertSafeRelativeVaultPath(this.settings.activeProjectsDir);
+    const projectPath = assertSafeRelativeVaultPath(`${activeRoot}/${folderName}`);
 
     if (this.app.vault.getAbstractFileByPath(projectPath)) {
       throw new Error(`Folder projektu „${folderName}” już istnieje.`);
     }
 
-    await this.ensureFolder(this.settings.activeProjectsDir);
-    await this.app.vault.createFolder(projectPath);
+    await this.ensureFolderRecursive(projectPath);
 
     for (const sub of this.settings.projectSubfolders) {
-      const subPath = normalizePath(`${projectPath}/${sub}`);
-      if (!this.app.vault.getAbstractFileByPath(subPath)) {
-        await this.app.vault.createFolder(subPath);
-      }
+      const safeSub = sanitizeFilename(sub);
+      if (!safeSub) continue;
+      await this.ensureFolderRecursive(`${projectPath}/${safeSub}`);
     }
 
-    const masterName = `${this.settings.masterNotePrefix}${folderName}.md`;
-    const masterPath = normalizePath(`${projectPath}/${masterName}`);
+    const masterName = sanitizeFilename(`${this.settings.masterNotePrefix}${folderName}`);
+    const masterPath = assertSafeRelativeVaultPath(`${projectPath}/${masterName}.md`);
     const baseFileName =
       this.settings.baseFilePath.split("/").pop() || "_base_trinitec_projekty.base";
 
@@ -61,12 +63,15 @@ export class ProjectLifecycleService {
   }
 
   async archiveProject(project: VaultProjectMatch): Promise<string> {
-    const folder = this.app.vault.getAbstractFileByPath(project.folderPath);
+    const safeProjectPath = assertSafeRelativeVaultPath(project.folderPath);
+    const folder = this.app.vault.getAbstractFileByPath(safeProjectPath);
     if (!(folder instanceof TFolder)) {
       throw new Error("Nie znaleziono katalogu projektu do zarchiwizowania.");
     }
 
-    const masterPath = normalizePath(`${project.folderPath}/${project.masterNoteName}.md`);
+    const masterPath = assertSafeRelativeVaultPath(
+      `${safeProjectPath}/${project.masterNoteName}.md`
+    );
     const masterFile = this.app.vault.getAbstractFileByPath(masterPath);
     if (masterFile instanceof TFile) {
       await this.app.fileManager.processFrontMatter(masterFile, (fm) => {
@@ -74,19 +79,24 @@ export class ProjectLifecycleService {
       });
     }
 
-    const archiveRoot = normalizePath(this.settings.archiveProjectsDir);
-    await this.ensureFolder(archiveRoot);
+    const archiveRoot = assertSafeRelativeVaultPath(this.settings.archiveProjectsDir);
+    await this.ensureFolderRecursive(archiveRoot);
 
-    const destPath = normalizePath(`${archiveRoot}/${project.folderName}`);
+    const destPath = assertSafeRelativeVaultPath(`${archiveRoot}/${sanitizeFilename(project.folderName)}`);
     await this.app.fileManager.renameFile(folder, destPath);
     new Notice(`Zarchiwizowano projekt do: ${destPath}`);
     return destPath;
   }
 
-  private async ensureFolder(folderPath: string): Promise<void> {
-    const normalized = normalizePath(folderPath);
-    if (!this.app.vault.getAbstractFileByPath(normalized)) {
-      await this.app.vault.createFolder(normalized);
+  private async ensureFolderRecursive(folderPath: string): Promise<void> {
+    const safe = assertSafeRelativeVaultPath(folderPath);
+    let current = "";
+    for (const seg of safe.split("/")) {
+      current = current ? `${current}/${seg}` : seg;
+      const normalized = normalizePath(current);
+      if (!this.app.vault.getAbstractFileByPath(normalized)) {
+        await this.app.vault.createFolder(normalized);
+      }
     }
   }
 }

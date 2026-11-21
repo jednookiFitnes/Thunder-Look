@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "description": "Polityka bezpieczeństwa i konfiguracja aktywnych analiz AI (bez kluczy API). Domyślnie tryb bezpieczny Read-Only / Dry-Run.",
+  "description": "Przykładowa polityka bezpieczeństwa i reguł AI dla Thunder Look MCP (zero kluczy API). Domyślnie tryb Read-Only / Dry-Run. Skopiuj jako ai-policy.json (ignorowany przez Git) i dostosuj do swojego sejfu.",
   "security": {
     "allowImapMove": false,
     "allowSmtpSend": false,
@@ -42,8 +42,7 @@
         "uruchomienie",
         "realizacja",
         "pilne",
-        "awaria",
-        "przestój"
+        "awaria"
       ]
     },
     {
@@ -56,7 +55,6 @@
         "proszę o informację",
         "czy możemy",
         "wyjaśnienie",
-        "schemat",
         "dokumentacja",
         "termin"
       ]
@@ -72,9 +70,7 @@
         "podsumowanie",
         "pomiary",
         "testy",
-        "odbior",
-        "FAT",
-        "SAT"
+        "odbiór"
       ]
     },
     {
@@ -87,8 +83,7 @@
         "wycena",
         "zapytanie ofertowe",
         "RFQ",
-        "kosztorys",
-        "kalkulacja"
+        "kosztorys"
       ]
     }
   ]

@@ -12,8 +12,8 @@ const vaultService = new VaultService(config);
 const program = new Command();
 
 program
-  .name('trinitec-mail')
-  .description('CLI dla Trinitec Mail & Obsidian Project Manager (roundcube.pl IMAP/SMTP + Praca Vault, zero kluczy API AI)')
+  .name('thunder-look')
+  .description('CLI dla Thunder Look (autor: Piotr Świerk) — IMAP/SMTP (Roundcube, Gmail, Outlook) + Obsidian Vault, zero kluczy API AI')
   .version('1.0.0');
 
 program
@@ -67,6 +67,7 @@ program
           body,
           fromEmail: email.fromEmail,
           messageId: email.messageId,
+          contentHash: email.contentHash,
           projectCodeRegex: policy.projectCodeRegex,
         })
       : null;
@@ -119,6 +120,7 @@ program
             body,
             fromEmail: full.fromEmail,
             messageId: full.messageId,
+            contentHash: full.contentHash,
             projectCodeRegex: policy.projectCodeRegex,
           })
         : null;
@@ -155,7 +157,7 @@ program
         JSON.stringify(
           {
             dryRun: true,
-            message: 'Tryb Read-Only aktywny. Użyj --force lub ustaw security.allowImapMove=true w trinitec-ai-policy.json.',
+            message: 'Tryb Read-Only aktywny. Użyj --force lub ustaw security.allowImapMove=true w ai-policy.json.',
             proposedMove: { uid: Number(uidStr), from: opts.folder, to: destinationFolder },
           },
           null,
@@ -269,7 +271,7 @@ program
 
 program
   .command('policy')
-  .description('Wyświetla lub aktualizuje flagi w trinitec-ai-policy.json')
+  .description('Wyświetla lub aktualizuje flagi w ai-policy.json')
   .option('--allow-imap-move <bool>', 'Zezwól na przenoszenie IMAP (true/false)')
   .option('--allow-vault-write <bool>', 'Zezwól na zapis do sejfu (true/false)')
   .option('--allow-smtp-send <bool>', 'Zezwól na wysyłkę SMTP (true/false)')
@@ -297,6 +299,6 @@ program
   );
 
 program.parseAsync(process.argv).catch((err) => {
-  console.error('[trinitec-mail-cli] Błąd:', err instanceof Error ? err.message : String(err));
+  console.error('[thunder-look-cli] Błąd:', err instanceof Error ? err.message : String(err));
   process.exit(1);
 });

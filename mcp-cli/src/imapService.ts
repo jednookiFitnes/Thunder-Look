@@ -3,7 +3,20 @@ import { simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
 import TurndownService from 'turndown';
 import type { AppConfig } from './config.js';
+import {
+  assertSafeSmtpHeaderValue,
+  isGmailHostname,
+} from '../../shared/networkSecurity.js';
+import {
+  buildCanonicalThreadId,
+  computeContentHash,
+} from '../../shared/textUtils.js';
+import { sanitizeEmailHtml } from '../../shared/htmlSanitizer.js';
 import { formatBytes, naturalCompare, stripQuotesAndSignatures } from './textUtils.js';
+
+const CONNECTION_TIMEOUT_MS = 12_000;
+const GREETING_TIMEOUT_MS = 10_000;
+const SOCKET_TIMEOUT_MS = 30_000;
 
 export interface FolderInfo {
   path: string;
@@ -21,6 +34,7 @@ export interface EmailSummary {
   folder: string;
   messageId: string;
   inReplyTo?: string;
+  threadId?: string;
   subject: string;
   from: string;
   fromEmail: string;
@@ -40,6 +54,8 @@ export interface ParsedAttachmentInfo {
 }
 
 export interface ParsedEmailFull extends EmailSummary {
+  threadId: string;
+  contentHash: string;
   text: string;
   markdown: string;
   cleanedMarkdown: string;
@@ -71,7 +87,7 @@ function createTurndown(): TurndownService {
     codeBlockStyle: 'fenced',
     bulletListMarker: '-',
   });
-  td.remove(['script', 'style', 'iframe', 'noscript']);
+  td.remove(['script', 'style', 'iframe', 'noscript', 'object', 'embed']);
   return td;
 }
 
@@ -92,30 +108,44 @@ export class ImapMailService {
       host: this.config.imap.host,
       port: this.config.imap.port,
       secure: this.config.imap.secure,
+      connectionTimeout: CONNECTION_TIMEOUT_MS,
+      greetingTimeout: GREETING_TIMEOUT_MS,
+      socketTimeout: SOCKET_TIMEOUT_MS,
       auth: {
         user: this.config.imap.user,
         pass: this.config.imap.password,
       },
       tls: {
-        rejectUnauthorized: true,
+        rejectUnauthorized: this.config.imap.strictTls,
+        minVersion: 'TLSv1.2',
       },
-      // Wyłączamy logowanie na stdout, aby nie psuć kanału MCP stdio
       logger: false,
     });
   }
 
   private async withClient<T>(fn: (client: ImapFlow) => Promise<T>): Promise<T> {
-    const client = this.createImapClient();
-    await client.connect();
-    try {
-      return await fn(client);
-    } finally {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const client = this.createImapClient();
       try {
-        await client.logout();
-      } catch {
-        client.close();
+        await client.connect();
+        try {
+          return await fn(client);
+        } finally {
+          await client.logout().catch(() => {
+            client.close();
+          });
+        }
+      } catch (err) {
+        lastErr = err;
+        const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+        const transient =
+          msg.includes('econnreset') || msg.includes('etimedout') || msg.includes('timeout');
+        if (attempt >= 2 || !transient) throw err;
+        await new Promise((r) => setTimeout(r, 500));
       }
     }
+    throw lastErr;
   }
 
   async listFolders(includeSizes = false): Promise<FolderInfo[]> {
@@ -140,7 +170,6 @@ export class ImapMailService {
           uidValidity = status.uidValidity ? String(status.uidValidity) : '0';
 
           if (includeSizes && messages > 0) {
-            // Nieinwazyjne otwarcie folderu w trybie EXAMINE (readOnly: true) — nie oznacza \Seen
             const lock = await client.getMailboxLock(mb.path, { readOnly: true });
             try {
               for await (const msg of client.fetch('1:*', { size: true })) {
@@ -151,7 +180,7 @@ export class ImapMailService {
             }
           }
         } catch (err) {
-          console.error(`[trinitec-mail] Nie udało się pobrać statusu folderu ${mb.path}:`, err);
+          console.error(`[thunder-look-mcp] Nie udało się pobrać statusu folderu ${mb.path}:`, err);
         }
 
         results.push({
@@ -183,7 +212,7 @@ export class ImapMailService {
           quotaLimitBytes = quota.storage.limit ?? null;
         }
       } catch {
-        // Nie każdy serwer IMAP wspiera RFC 2087 QUOTA — zliczamy RFC822.SIZE poniżej
+        // RFC 2087 QUOTA nieobsługiwane
       }
 
       const mailboxes = await client.list();
@@ -227,7 +256,9 @@ export class ImapMailService {
                   messageId: msg.envelope?.messageId || '',
                   inReplyTo: msg.envelope?.inReplyTo || undefined,
                   subject: msg.envelope?.subject || '(Bez tematu)',
-                  from: fromObj?.name ? `${fromObj.name} <${fromObj.address || ''}>` : fromObj?.address || 'Nieznany',
+                  from: fromObj?.name
+                    ? `${fromObj.name} <${fromObj.address || ''}>`
+                    : fromObj?.address || 'Nieznany',
                   fromEmail: (fromObj?.address || '').toLowerCase(),
                   to: (msg.envelope?.to || []).map((t) => t.address || '').filter(Boolean),
                   date: msg.envelope?.date ? msg.envelope.date.toISOString() : new Date().toISOString(),
@@ -242,14 +273,11 @@ export class ImapMailService {
             }
           }
         } catch (err) {
-          console.error(`[trinitec-mail] Błąd analizy rozmiaru folderu ${mb.path}:`, err);
+          console.error(`[thunder-look-mcp] Błąd analizy rozmiaru folderu ${mb.path}:`, err);
         }
 
-        const isGmailHost =
-          this.config.imap.host.toLowerCase().includes('gmail.com') ||
-          this.config.imap.host.toLowerCase().includes('googlemail.com');
         const isGmailAllMail =
-          isGmailHost &&
+          isGmailHostname(this.config.imap.host) &&
           (mb.specialUse === '\\All' || /^\[Gmail\]\/(All Mail|Wszystkie)/i.test(mb.path));
 
         if (!isGmailAllMail) {
@@ -305,7 +333,6 @@ export class ImapMailService {
     const limit = Math.min(Math.max(params.limit ?? 20, 1), 100);
 
     return this.withClient(async (client) => {
-      // Tryb readOnly (IMAP EXAMINE) — przeglądanie przez agenta nigdy nie oznacza wiadomości jako przeczytane!
       const lock = await client.getMailboxLock(folder, { readOnly: true });
       try {
         const criteria: Record<string, unknown> = {};
@@ -350,7 +377,9 @@ export class ImapMailService {
             messageId: msg.envelope?.messageId || '',
             inReplyTo: msg.envelope?.inReplyTo || undefined,
             subject: msg.envelope?.subject || '(Bez tematu)',
-            from: fromObj?.name ? `${fromObj.name} <${fromObj.address || ''}>` : fromObj?.address || 'Nieznany',
+            from: fromObj?.name
+              ? `${fromObj.name} <${fromObj.address || ''}>`
+              : fromObj?.address || 'Nieznany',
             fromEmail: (fromObj?.address || '').toLowerCase(),
             to: (msg.envelope?.to || []).map((t) => t.address || '').filter(Boolean),
             date: msg.envelope?.date ? msg.envelope.date.toISOString() : new Date().toISOString(),
@@ -371,7 +400,6 @@ export class ImapMailService {
 
   async readEmailByUid(folder: string, uid: number): Promise<ParsedEmailFull> {
     return this.withClient(async (client) => {
-      // Nieinwazyjne IMAP EXAMINE + BODY.PEEK[] (source: true w imapflow nie ustawia \Seen)
       const lock = await client.getMailboxLock(folder, { readOnly: true });
       try {
         const fetched = await client.fetchOne(
@@ -393,16 +421,42 @@ export class ImapMailService {
         const parsed = await simpleParser(fetched.source);
         const td = createTurndown();
 
-        const htmlString = typeof parsed.html === 'string' ? parsed.html : '';
+        const rawHtml = typeof parsed.html === 'string' ? parsed.html : '';
+        const safeHtml = rawHtml
+          ? sanitizeEmailHtml(rawHtml, { blockRemoteImages: true }).bodyHtml
+          : '';
         const textString = parsed.text || '';
-        const markdown = htmlString
-          ? td.turndown(htmlString)
-          : textString;
+        const markdown = safeHtml ? td.turndown(safeHtml) : textString;
 
         const stripped = stripQuotesAndSignatures(markdown || textString);
         const fromFirst = parsed.from?.value?.[0];
         const toAddrs = extractAddresses(parsed.to);
         const sz = fetched.size || fetched.source.length;
+        const dateIso = (parsed.date || fetched.envelope?.date || new Date()).toISOString();
+        const subject = parsed.subject || fetched.envelope?.subject || '(Bez tematu)';
+        const messageId = parsed.messageId || fetched.envelope?.messageId || `<uid-${uid}@local>`;
+        const inReplyTo = parsed.inReplyTo || fetched.envelope?.inReplyTo || undefined;
+        const fromEmail = (fromFirst?.address || '').toLowerCase();
+
+        const rawRefs = parsed.references;
+        const references: string[] = Array.isArray(rawRefs)
+          ? rawRefs.map((r) => String(r).trim()).filter(Boolean)
+          : typeof rawRefs === 'string'
+          ? rawRefs.split(/\s+/).filter(Boolean)
+          : [];
+
+        const threadId = buildCanonicalThreadId({
+          references,
+          inReplyTo,
+          messageId,
+          subject,
+        });
+        const contentHash = computeContentHash({
+          fromEmail,
+          subject,
+          date: dateIso.slice(0, 10),
+          body: stripped.cleaned || markdown,
+        });
 
         const attachments: ParsedAttachmentInfo[] = (parsed.attachments || []).map((att) => ({
           filename: att.filename || 'zalacznik.bin',
@@ -414,15 +468,17 @@ export class ImapMailService {
         return {
           uid: fetched.uid,
           folder,
-          messageId: parsed.messageId || fetched.envelope?.messageId || `<uid-${uid}@local>`,
-          inReplyTo: parsed.inReplyTo || fetched.envelope?.inReplyTo || undefined,
-          subject: parsed.subject || fetched.envelope?.subject || '(Bez tematu)',
+          messageId,
+          inReplyTo,
+          threadId,
+          contentHash,
+          subject,
           from: fromFirst?.name
             ? `${fromFirst.name} <${fromFirst.address || ''}>`
             : fromFirst?.address || 'Nieznany',
-          fromEmail: (fromFirst?.address || '').toLowerCase(),
+          fromEmail,
           to: toAddrs,
-          date: (parsed.date || fetched.envelope?.date || new Date()).toISOString(),
+          date: dateIso,
           sizeBytes: sz,
           sizeFormatted: formatBytes(sz),
           flags: Array.from(fetched.flags || []),
@@ -431,7 +487,7 @@ export class ImapMailService {
           markdown,
           cleanedMarkdown: stripped.cleaned,
           quoteSavingsPercent: stripped.savedPercent,
-          html: htmlString,
+          html: safeHtml,
           rawEml: fetched.source,
           attachments,
         };
@@ -447,11 +503,10 @@ export class ImapMailService {
     destinationFolder: string;
   }): Promise<{ moved: boolean; uid: number; from: string; to: string }> {
     return this.withClient(async (client) => {
-      // Upewnij się, że folder docelowy istnieje (lub spróbuj utworzyć)
       try {
         await client.mailboxCreate(params.destinationFolder);
       } catch {
-        // Folder już istnieje — to jest oczekiwane
+        // Folder już istnieje
       }
 
       const lock = await client.getMailboxLock(params.sourceFolder);
@@ -482,38 +537,59 @@ export class ImapMailService {
       throw new Error('Brak danych logowania SMTP (SMTP_HOST, MAIL_USER, MAIL_PASSWORD).');
     }
 
+    // Ochrona przed SMTP Header Injection (\r, \n, \0)
+    const safeTo = assertSafeSmtpHeaderValue('to', params.to);
+    const safeCc = params.cc ? assertSafeSmtpHeaderValue('cc', params.cc) : undefined;
+    const safeSubject = assertSafeSmtpHeaderValue('subject', params.subject);
+    const safeInReplyTo = params.inReplyTo
+      ? assertSafeSmtpHeaderValue('inReplyTo', params.inReplyTo)
+      : undefined;
+    const safeReferences = params.references
+      ? assertSafeSmtpHeaderValue('references', params.references)
+      : undefined;
+    const safeFromName = this.config.smtp.fromName
+      ? assertSafeSmtpHeaderValue('fromName', this.config.smtp.fromName).replace(/"/g, "'")
+      : '';
+    const safeUser = assertSafeSmtpHeaderValue('from', this.config.smtp.user);
+
     const transporter = nodemailer.createTransport({
       host: this.config.smtp.host,
       port: this.config.smtp.port,
       secure: this.config.smtp.secure,
+      connectionTimeout: CONNECTION_TIMEOUT_MS,
+      greetingTimeout: GREETING_TIMEOUT_MS,
+      socketTimeout: SOCKET_TIMEOUT_MS,
       auth: {
-        user: this.config.smtp.user,
+        user: safeUser,
         pass: this.config.smtp.password,
       },
       tls: {
-        rejectUnauthorized: true,
+        rejectUnauthorized: this.config.smtp.strictTls,
+        minVersion: 'TLSv1.2',
       },
     });
 
     const mailOptions = {
-      from: this.config.smtp.fromName
-        ? `"${this.config.smtp.fromName}" <${this.config.smtp.user}>`
-        : this.config.smtp.user,
-      to: params.to,
-      cc: params.cc,
-      subject: params.subject,
+      from: safeFromName ? `"${safeFromName}" <${safeUser}>` : safeUser,
+      to: safeTo,
+      cc: safeCc,
+      subject: safeSubject,
       text: params.text,
-      html: params.html,
-      inReplyTo: params.inReplyTo,
-      references: params.references,
+      html: params.html
+        ? sanitizeEmailHtml(params.html, { blockRemoteImages: true }).bodyHtml
+        : undefined,
+      inReplyTo: safeInReplyTo,
+      references: safeReferences,
     };
 
-    const info = await transporter.sendMail(mailOptions);
+    let info: { messageId: string };
+    try {
+      info = await transporter.sendMail(mailOptions);
+    } finally {
+      transporter.close();
+    }
 
-    // Zbuduj surową wiadomość RFC 822 do IMAP APPEND w folderze Sent (pomijamy dla Gmaila — SMTP sam zapisuje w [Gmail]/Sent Mail)
-    const isGmailSmtp =
-      this.config.smtp.host.toLowerCase().includes('gmail.com') ||
-      this.config.smtp.host.toLowerCase().includes('googlemail.com');
+    const isGmailSmtp = isGmailHostname(this.config.smtp.host);
     let appendedToSent = false;
     let sentFolder: string | null = isGmailSmtp ? '[Gmail]/Sent Mail (auto)' : null;
     if (!isGmailSmtp) {
@@ -531,7 +607,7 @@ export class ImapMailService {
         appendedToSent = appendRes.appended;
         sentFolder = appendRes.folder;
       } catch (err) {
-        console.error('[trinitec-mail] Wysłano przez SMTP, ale nie udało się zapisać kopii w Sent:', err);
+        console.error('[thunder-look-mcp] Wysłano SMTP, błąd zapisu kopii w Sent:', err);
       }
     }
 

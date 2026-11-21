@@ -6,14 +6,18 @@ import {
   ParsedEmailMessage,
 } from "../types";
 import { groupHeadersIntoThreads } from "../services/mailParserService";
-import { formatBytes, sanitizeHtmlForSandbox } from "../utils/textUtils";
 import { SaveEmailModal } from "../modals/SaveEmailModal";
 import { ComposeMailModal } from "../modals/ComposeMailModal";
 import type TrinitecMailPlugin from "../main";
+import { renderFolderPane } from "./mailWorkspace/FolderPane";
+import { renderThreadListPane } from "./mailWorkspace/ThreadListPane";
+import {
+  renderMessageReaderPane,
+  type ReaderRenderMode,
+  type ReplyComposeMode,
+} from "./mailWorkspace/MessageReaderPane";
 
 export const VIEW_TYPE_TRINITEC_MAIL = "trinitec-mail-workspace";
-
-type ReaderRenderMode = "html" | "markdown";
 
 export class MailWorkspaceView extends ItemView {
   private plugin: TrinitecMailPlugin;
@@ -29,8 +33,11 @@ export class MailWorkspaceView extends ItemView {
   private showStrippedMarkdown = true;
   private filterQuery = "";
   private loading = false;
+  private offlineMode = false;
+  private isClosed = false;
+  private requestEpoch = 0;
+
   private activeContextMenu: HTMLElement | null = null;
-  private dismissMenuHandler: ((e: MouseEvent) => void) | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: TrinitecMailPlugin) {
     super(leaf);
@@ -43,7 +50,7 @@ export class MailWorkspaceView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Trinitec Mail (IMAP)";
+    return "Thunder Look (IMAP)";
   }
 
   getIcon(): string {
@@ -51,34 +58,47 @@ export class MailWorkspaceView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
-    this.dismissMenuHandler = () => this.closeContextMenu();
-    window.addEventListener("click", this.dismissMenuHandler);
+    this.isClosed = false;
+    this.registerDomEvent(window, "click", () => this.closeContextMenu());
     this.render();
-    // Natychmiastowe wczytanie ostatniego cache z IndexedDB (poza OneDrive)
-    const cached = await this.plugin.imapService.listMessages(this.currentFolder, 60, true);
-    if (cached.length > 0) {
-      this.headers = cached;
-      this.threads = groupHeadersIntoThreads(cached);
-      this.render();
+
+    // Natychmiastowe wczytanie cache z IndexedDB (poza OneDrive)
+    const [cachedFolders, cachedHeaders] = await Promise.all([
+      this.plugin.cacheService.getFolderList(),
+      this.plugin.cacheService.getFolderHeaders(this.currentFolder),
+    ]);
+    if (this.isClosed) return;
+    if (cachedFolders && cachedFolders.length > 0) {
+      this.folders = cachedFolders;
     }
+    if (cachedHeaders && cachedHeaders.length > 0) {
+      this.headers = cachedHeaders;
+      this.threads = groupHeadersIntoThreads(cachedHeaders);
+    }
+    this.render();
   }
 
   async onClose(): Promise<void> {
+    this.isClosed = true;
+    this.requestEpoch++;
     this.closeContextMenu();
-    if (this.dismissMenuHandler) {
-      window.removeEventListener("click", this.dismissMenuHandler);
-      this.dismissMenuHandler = null;
-    }
+    this.selectedEmail = null;
     this.contentEl.empty();
   }
 
   async refreshFolder(folder = this.currentFolder): Promise<void> {
+    if (this.isClosed) return;
+    const epoch = ++this.requestEpoch;
     this.loading = true;
+    this.plugin.updateRuntimeStatus({ state: "syncing" });
     this.render();
+
     try {
       const prevFolder = this.currentFolder;
-      this.folders = await this.plugin.imapService.listFolders();
-      // Selection State Persistence: zachowaj wybrany folder, jeśli nadal istnieje
+      const folderRes = await this.plugin.imapService.listFolders(true);
+      if (this.isClosed || epoch !== this.requestEpoch) return;
+
+      this.folders = folderRes.folders;
       const folderStillExists = this.folders.some((f) => f.path === folder);
       this.currentFolder = folderStillExists
         ? folder
@@ -86,30 +106,122 @@ export class MailWorkspaceView extends ItemView {
         ? prevFolder
         : this.folders[0]?.path || "INBOX";
 
-      this.headers = await this.plugin.imapService.listMessages(this.currentFolder, 60, false);
+      const msgRes = await this.plugin.imapService.listMessagesWithMeta(
+        this.currentFolder,
+        60,
+        false
+      );
+      if (this.isClosed || epoch !== this.requestEpoch) return;
+
+      this.headers = msgRes.headers;
       this.threads = groupHeadersIntoThreads(this.headers);
+      this.offlineMode = folderRes.fromCache || msgRes.fromCache;
+
+      const inboxSummary = this.folders.find(
+        (f) => f.path.toLowerCase() === (this.plugin.settings.inboxFolder || "INBOX").toLowerCase()
+      );
+      const unreadCount =
+        inboxSummary?.unseen ?? this.headers.filter((h) => !h.seen).length;
+
+      this.plugin.updateRuntimeStatus({
+        state: this.offlineMode ? "offline" : "connected",
+        lastSyncAt: this.offlineMode ? this.plugin.runtimeStatus.lastSyncAt : new Date(),
+        unreadCount,
+        lastError: this.offlineMode ? "Tryb offline (dane z lokalnego cache)" : null,
+      });
+
+      if (this.offlineMode) {
+        new Notice("Brak połączenia z serwerem IMAP — wyświetlono zapisany cache offline.");
+      }
     } catch (err) {
-      new Notice(`Błąd połączenia IMAP: ${(err as Error).message}`);
+      if (this.isClosed || epoch !== this.requestEpoch) return;
+      const msg = err instanceof Error ? err.message : String(err);
+      this.offlineMode = true;
+      this.plugin.updateRuntimeStatus({ state: "error", lastError: msg });
+      new Notice(`Błąd połączenia IMAP: ${msg}`);
     } finally {
-      this.loading = false;
-      this.render();
+      if (!this.isClosed && epoch === this.requestEpoch) {
+        this.loading = false;
+        this.render();
+      }
     }
   }
 
   private async openMessage(header: ImapMessageHeader): Promise<void> {
+    if (this.isClosed) return;
+    const epoch = ++this.requestEpoch;
     this.selectedUid = header.uid;
     this.allowRemoteImagesForCurrent = false;
     this.render();
+
     try {
-      this.selectedEmail = await this.plugin.imapService.fetchFullMessage(
-        header.folder,
-        header.uid
-      );
-      this.renderMode = this.selectedEmail.htmlBody ? "html" : "markdown";
+      const full = await this.plugin.imapService.fetchFullMessage(header.folder, header.uid);
+      if (this.isClosed || epoch !== this.requestEpoch) return;
+      this.selectedEmail = full;
+      this.renderMode = full.htmlBody ? "html" : "markdown";
       this.render();
     } catch (err) {
-      new Notice(`Nie udało się pobrać wiadomości: ${(err as Error).message}`);
+      if (!this.isClosed) {
+        new Notice(`Nie udało się pobrać wiadomości: ${(err as Error).message}`);
+      }
     }
+  }
+
+  private openComposeForMessage(email: ParsedEmailMessage, mode: ReplyComposeMode): void {
+    const myEmail = this.plugin.settings.imapUser.trim().toLowerCase();
+    const signatureBlock = this.plugin.settings.emailSignature.trim()
+      ? `\n\n-- \n${this.plugin.settings.emailSignature.trim()}`
+      : "";
+
+    const quotedBody = `\n\n--- Oryginalna wiadomość od ${email.fromName} (${email.date}) ---\n${email.strippedMarkdownBody}`;
+
+    if (mode === "forward") {
+      new ComposeMailModal(
+        this.app,
+        this.plugin.settings,
+        this.plugin.smtpService,
+        this.plugin.projectMatcher,
+        this.plugin.mruStore,
+        {
+          subject: /^fwd?:/i.test(email.subject) ? email.subject : `Fwd: ${email.subject}`,
+          body: `${signatureBlock}\n\n---------- Przekazana wiadomość ----------\nOd: ${email.fromRaw}\nData: ${email.date}\nTemat: ${email.subject}\nDo: ${email.toRaw}\n\n${email.markdownBody}`,
+        }
+      ).open();
+      return;
+    }
+
+    const replyTarget = email.replyToRaw || email.fromEmail;
+    let ccList = "";
+    if (mode === "reply-all") {
+      const allRecipients = `${email.toRaw}, ${email.ccRaw || ""}`
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .filter((addr) => {
+          const lower = addr.toLowerCase();
+          return (
+            (!myEmail || !lower.includes(myEmail)) &&
+            !lower.includes(replyTarget.toLowerCase())
+          );
+        });
+      ccList = Array.from(new Set(allRecipients)).join(", ");
+    }
+
+    new ComposeMailModal(
+      this.app,
+      this.plugin.settings,
+      this.plugin.smtpService,
+      this.plugin.projectMatcher,
+      this.plugin.mruStore,
+      {
+        to: replyTarget,
+        cc: ccList,
+        subject: /^re:/i.test(email.subject) ? email.subject : `Re: ${email.subject}`,
+        body: `${signatureBlock}${quotedBody}`,
+        inReplyTo: email.messageId,
+        references: [...(email.references || []), ...(email.messageId ? [email.messageId] : [])],
+      }
+    ).open();
   }
 
   private closeContextMenu(): void {
@@ -119,77 +231,84 @@ export class MailWorkspaceView extends ItemView {
     }
   }
 
-  /**
-   * Niestandardowe menu kontekstowe z viewport clampingiem (AGENTS.md).
-   */
   private openThreadContextMenu(evt: MouseEvent, header: ImapMessageHeader): void {
     evt.preventDefault();
     evt.stopPropagation();
     this.closeContextMenu();
 
-    const menu = document.body.createDiv({ cls: "trinitec-mail-context-menu" });
+    const menu = document.body.createDiv({ cls: "tl-context-menu" });
     this.activeContextMenu = menu;
 
     const addItem = (label: string, onClick: () => void) => {
-      const btn = menu.createEl("button", { text: label, cls: "trinitec-mail-context-item" });
-      btn.onclick = (e) => {
+      const btn = menu.createEl("button", {
+        text: label,
+        type: "button",
+        cls: "tl-context-item",
+      });
+      btn.addEventListener("click", (e) => {
         e.stopPropagation();
         this.closeContextMenu();
         onClick();
-      };
+      });
     };
 
-    addItem("Zapisz w Praca Vault (Opt-in)...", async () => {
-      const full = await this.plugin.imapService.fetchFullMessage(header.folder, header.uid);
-      const proposal = this.plugin.aiBridge.analyzeContent(
-        full.subject,
-        full.strippedMarkdownBody
-      );
-      new SaveEmailModal(
-        this.app,
-        this.plugin.settings,
-        this.plugin.projectMatcher,
-        this.plugin.vaultWriter,
-        this.plugin.mruStore,
-        full,
-        "",
-        proposal
-      ).open();
+    addItem("Zapisz w Vaulcie (Opt-in)...", async () => {
+      try {
+        const full = await this.plugin.imapService.fetchFullMessage(header.folder, header.uid);
+        const proposal = this.plugin.aiBridge.analyzeContent(
+          full.subject,
+          full.strippedMarkdownBody
+        );
+        new SaveEmailModal(
+          this.app,
+          this.plugin.settings,
+          this.plugin.projectMatcher,
+          this.plugin.vaultWriter,
+          this.plugin.mruStore,
+          full,
+          "",
+          proposal
+        ).open();
+      } catch (err) {
+        new Notice(`Nie udało się wczytać wiadomości: ${(err as Error).message}`);
+      }
     });
 
-    addItem(header.seen ? "Oznacz jako nieprzeczytaną" : "Oznacz jako przeczytaną", async () => {
-      await this.plugin.imapService.setMessageFlag(
-        header.folder,
-        header.uid,
-        "\\Seen",
-        !header.seen
-      );
-      await this.refreshFolder();
-    });
-
-    addItem(header.flagged ? "Usuń flagę priorytetu" : "Oznacz jako pilną (Flaga)", async () => {
-      await this.plugin.imapService.setMessageFlag(
-        header.folder,
-        header.uid,
-        "\\Flagged",
-        !header.flagged
-      );
-      await this.refreshFolder();
-    });
-
-    if (this.plugin.settings.allowlistFolder) {
-      addItem(`Przenieś do kolejki ${this.plugin.settings.allowlistFolder}`, async () => {
-        await this.plugin.imapService.moveMessage(
+    if (!this.offlineMode) {
+      addItem(header.seen ? "Oznacz jako nieprzeczytaną" : "Oznacz jako przeczytaną", async () => {
+        await this.plugin.imapService.setMessageFlag(
           header.folder,
           header.uid,
-          this.plugin.settings.allowlistFolder
+          "\\Seen",
+          !header.seen
         );
-        new Notice(`Przeniesiono do kolejki ${this.plugin.settings.allowlistFolder}`);
         await this.refreshFolder();
       });
+
+      addItem(header.flagged ? "Usuń flagę priorytetu" : "Oznacz jako pilną (Flaga)", async () => {
+        await this.plugin.imapService.setMessageFlag(
+          header.folder,
+          header.uid,
+          "\\Flagged",
+          !header.flagged
+        );
+        await this.refreshFolder();
+      });
+
+      if (this.plugin.settings.allowlistFolder) {
+        addItem(`Przenieś do kolejki ${this.plugin.settings.allowlistFolder}`, async () => {
+          await this.plugin.imapService.moveMessage(
+            header.folder,
+            header.uid,
+            this.plugin.settings.allowlistFolder
+          );
+          new Notice(`Przeniesiono do kolejki ${this.plugin.settings.allowlistFolder}`);
+          await this.refreshFolder();
+        });
+      }
     }
 
-    // Viewport clamping — menu nigdy nie wyjdzie poza widoczny obszar ekranu
+    // Viewport clamping — menu nigdy nie wyjdzie poza ekran
     menu.style.left = `${evt.clientX}px`;
     menu.style.top = `${evt.clientY}px`;
     const rect = menu.getBoundingClientRect();
@@ -202,231 +321,127 @@ export class MailWorkspaceView extends ItemView {
   private render(): void {
     const container = this.contentEl;
     container.empty();
-    const root = container.createDiv({ cls: "trinitec-mail-workspace" });
+    const root = container.createDiv({ cls: "tl-workspace" });
 
-    // Górny pasek narzędzi
-    const topbar = root.createDiv({ cls: "trinitec-mail-topbar" });
-    const leftTools = topbar.createDiv({ cls: "trinitec-mail-topbar-group" });
+    // Pasek narzędzi
+    const topbar = root.createDiv({ cls: "tl-topbar" });
+    const leftTools = topbar.createDiv({ cls: "tl-topbar-group" });
 
     const refreshBtn = leftTools.createEl("button", {
       text: this.loading ? "Synchronizacja..." : "Odśwież IMAP",
+      type: "button",
       cls: "mod-cta",
     });
-    refreshBtn.onclick = () => this.refreshFolder();
+    refreshBtn.disabled = this.loading;
+    refreshBtn.addEventListener("click", () => {
+      void this.refreshFolder();
+    });
 
-    const composeBtn = leftTools.createEl("button", { text: "Nowy e-mail" });
-    composeBtn.onclick = () =>
+    const composeBtn = leftTools.createEl("button", { text: "Nowy e-mail", type: "button" });
+    composeBtn.addEventListener("click", () => {
+      const signature = this.plugin.settings.emailSignature.trim()
+        ? `\n\n-- \n${this.plugin.settings.emailSignature.trim()}`
+        : "";
       new ComposeMailModal(
         this.app,
+        this.plugin.settings,
         this.plugin.smtpService,
         this.plugin.projectMatcher,
-        this.plugin.mruStore
+        this.plugin.mruStore,
+        { body: signature }
       ).open();
+    });
 
-    const quotaBtn = leftTools.createEl("button", { text: "Rozmiar skrzynki" });
-    quotaBtn.onclick = () => this.plugin.activateStorageView();
+    const quotaBtn = leftTools.createEl("button", { text: "Rozmiar skrzynki", type: "button" });
+    quotaBtn.addEventListener("click", () => {
+      void this.plugin.activateStorageView();
+    });
 
-    const rightTools = topbar.createDiv({ cls: "trinitec-mail-topbar-group" });
+    const rightTools = topbar.createDiv({ cls: "tl-topbar-group" });
     const searchInput = rightTools.createEl("input", {
       type: "search",
       placeholder: "Filtruj temat, nadawcę lub kod YY-XXX...",
     });
     searchInput.value = this.filterQuery;
-    searchInput.oninput = () => {
+
+    if (this.offlineMode) {
+      const offlineBanner = root.createDiv({ cls: "tl-banner-warn tl-offline-banner" });
+      offlineBanner.createSpan({
+        text: "Tryb offline — przeglądasz lokalnie zapisane nagłówki i treści z cache IndexedDB.",
+      });
+      const retryBtn = offlineBanner.createEl("button", {
+        text: "Połącz ponownie",
+        type: "button",
+      });
+      retryBtn.addEventListener("click", () => {
+        void this.refreshFolder();
+      });
+    }
+
+    const threePane = root.createDiv({ cls: "tl-three-pane" });
+
+    const foldersPane = threePane.createDiv({ cls: "tl-pane" });
+    renderFolderPane({
+      pane: foldersPane,
+      folders: this.folders,
+      currentFolder: this.currentFolder,
+      headerCount: this.headers.length,
+      onSelectFolder: (folderPath) => {
+        void this.refreshFolder(folderPath);
+      },
+    });
+
+    const threadsPane = threePane.createDiv({ cls: "tl-pane" });
+    const renderThreads = () => {
+      renderThreadListPane({
+        pane: threadsPane,
+        currentFolder: this.currentFolder,
+        threads: this.threads,
+        filterQuery: this.filterQuery,
+        selectedUid: this.selectedUid,
+        onSelectMessage: (header) => {
+          void this.openMessage(header);
+        },
+        onOpenContextMenu: (evt, header) => this.openThreadContextMenu(evt, header),
+      });
+    };
+    renderThreads();
+
+    searchInput.addEventListener("input", () => {
       this.filterQuery = searchInput.value;
-      this.renderThreadList(threadsPane);
-    };
-
-    // 3-kolumnowy widok klienta poczty
-    const threePane = root.createDiv({ cls: "trinitec-mail-three-pane" });
-
-    // Kolumna 1: Drzewo folderów IMAP
-    const foldersPane = threePane.createDiv({ cls: "trinitec-mail-pane" });
-    foldersPane.createDiv({
-      cls: "trinitec-mail-pane-header",
-      text: `Foldery (${this.folders.length || 1})`,
+      renderThreads();
     });
 
-    const folderItems =
-      this.folders.length > 0
-        ? this.folders
-        : [{ path: this.currentFolder, messages: this.headers.length, unseen: 0, uidValidity: "0" }];
-
-    for (const f of folderItems) {
-      const row = foldersPane.createDiv({
-        cls: `trinitec-mail-folder-item${f.path === this.currentFolder ? " is-active" : ""}`,
-      });
-      row.createSpan({ text: f.path });
-      row.createSpan({
-        cls: "trinitec-mail-status-text",
-        text: f.unseen > 0 ? `${f.unseen}/${f.messages}` : String(f.messages),
-      });
-      row.onclick = () => this.refreshFolder(f.path);
-    }
-
-    // Kolumna 2: Lista wątków
-    const threadsPane = threePane.createDiv({ cls: "trinitec-mail-pane" });
-    this.renderThreadList(threadsPane);
-
-    // Kolumna 3: Panel czytania wiadomości
-    const readerPane = threePane.createDiv({ cls: "trinitec-mail-pane" });
-    this.renderReaderPane(readerPane);
-  }
-
-  private renderThreadList(pane: HTMLElement): void {
-    pane.empty();
-    const q = this.filterQuery.trim().toLowerCase();
-    const visible = q
-      ? this.threads.filter(
-          (t) =>
-            t.subject.toLowerCase().includes(q) ||
-            t.messages.some(
-              (m) =>
-                m.fromName.toLowerCase().includes(q) ||
-                m.fromEmail.toLowerCase().includes(q) ||
-                (m.detectedProjectCode || "").toLowerCase().includes(q)
-            )
-        )
-      : this.threads;
-
-    pane.createDiv({
-      cls: "trinitec-mail-pane-header",
-      text: `${this.currentFolder} · Wątki: ${visible.length}`,
-    });
-
-    if (visible.length === 0) {
-      const empty = pane.createDiv({ cls: "trinitec-mail-reader" });
-      empty.createDiv({
-        cls: "trinitec-mail-status-text",
-        text: "Brak wiadomości do wyświetlenia. Kliknij „Odśwież IMAP”, aby pobrać listę z serwera.",
-      });
-      return;
-    }
-
-    for (const thread of visible) {
-      const headMsg = thread.messages[0];
-      if (!headMsg) continue;
-      const isSelected = this.selectedUid === headMsg.uid;
-      const item = pane.createDiv({
-        cls: `trinitec-mail-thread-item${isSelected ? " is-selected" : ""}${
-          thread.unreadCount > 0 ? " is-unread" : ""
-        }`,
-      });
-
-      const titleRow = item.createDiv({ cls: "trinitec-mail-meta-row" });
-      titleRow.createSpan({
-        cls: "trinitec-mail-thread-subject",
-        text: `${thread.flagged ? "★ " : ""}${thread.subject}`,
-      });
-      if (thread.messages.length > 1) {
-        titleRow.createSpan({ text: `(${thread.messages.length})` });
-      }
-
-      const meta = item.createDiv({ cls: "trinitec-mail-meta-row" });
-      meta.createSpan({
-        text: `${headMsg.fromName}${thread.projectCode ? ` · ${thread.projectCode}` : ""}`,
-      });
-      meta.createSpan({ text: `${thread.latestDate} · ${formatBytes(thread.totalSizeBytes)}` });
-
-      // Weryfikacja lewego przycisku myszy (e.button === 0) zgodnie z AGENTS.md
-      item.addEventListener("mousedown", (e: MouseEvent) => {
-        if (e.button !== 0) return;
-        void this.openMessage(headMsg);
-      });
-
-      item.addEventListener("contextmenu", (e: MouseEvent) => {
-        this.openThreadContextMenu(e, headMsg);
-      });
-    }
-  }
-
-  private renderReaderPane(pane: HTMLElement): void {
-    pane.empty();
-    if (!this.selectedEmail) {
-      const placeholder = pane.createDiv({ cls: "trinitec-mail-reader" });
-      placeholder.createEl("h4", { text: "Podgląd wiadomości (nieinwazyjny BODY.PEEK)" });
-      placeholder.createDiv({
-        cls: "trinitec-mail-status-text",
-        text: "Wybierz wątek z listy, aby odczytać wiadomość bez automatycznego zmieniania flagi „Przeczytane” na serwerze Roundcube. Zapis do Vaulta następuje wyłącznie po kliknięciu „Zapisz w Vaulcie (Opt-in)”.",
-      });
-      return;
-    }
-
-    const email = this.selectedEmail;
-    const proposal = this.plugin.aiBridge.analyzeContent(
-      email.subject,
-      email.strippedMarkdownBody
-    );
-
-    const reader = pane.createDiv({ cls: "trinitec-mail-reader" });
-    const head = reader.createDiv({ cls: "trinitec-mail-reader-head" });
-    head.createEl("h3", { cls: "trinitec-mail-reader-title", text: email.subject });
-    head.createDiv({
-      cls: "trinitec-mail-status-text",
-      text: `Od: ${email.fromRaw} · Do: ${email.toRaw} · ${email.date} · ${formatBytes(email.sizeBytes)} · Załączniki: ${email.attachments.length}`,
-    });
-    head.createDiv({
-      cls: "trinitec-mail-status-text",
-      text: `Sugestia AI (bez kluczy API): ${proposal.category} · Priorytet: ${proposal.priority} · Folder IMAP: ${proposal.suggestedImapFolder}`,
-    });
-
-    // Pasek akcji Opt-in, odpowiedzi i przełączania widoku
-    const actions = head.createDiv({ cls: "trinitec-mail-actions-row" });
-
-    const saveBtn = actions.createEl("button", {
-      text: "Zapisz w Vaulcie (Opt-in)",
-      cls: "mod-cta",
-    });
-    saveBtn.onclick = () => {
-      const selectedText = window.getSelection()?.toString() || "";
-      new SaveEmailModal(
-        this.app,
-        this.plugin.settings,
-        this.plugin.projectMatcher,
-        this.plugin.vaultWriter,
-        this.plugin.mruStore,
-        email,
-        selectedText,
-        proposal
-      ).open();
-    };
-
-    const replyBtn = actions.createEl("button", { text: "Odpowiedz" });
-    replyBtn.onclick = () => {
-      new ComposeMailModal(
-        this.app,
-        this.plugin.smtpService,
-        this.plugin.projectMatcher,
-        this.plugin.mruStore,
-        {
-          to: email.fromEmail,
-          subject: email.subject.startsWith("Re:") ? email.subject : `Re: ${email.subject}`,
-          body: `\n\n--- Oryginalna wiadomość od ${email.fromName} (${email.date}) ---\n${email.strippedMarkdownBody}`,
-          inReplyTo: email.messageId,
-          references: [...(email.references || []), ...(email.messageId ? [email.messageId] : [])],
-        }
-      ).open();
-    };
-
-    if (email.uid && email.folder) {
-      const seenBtn = actions.createEl("button", {
-        text: email.seen ? "Oznacz nieprzeczytane" : "Oznacz przeczytane",
-      });
-      seenBtn.onclick = async () => {
-        await this.plugin.imapService.setMessageFlag(
-          email.folder!,
-          email.uid!,
-          "\\Seen",
-          !email.seen
-        );
+    const readerPane = threePane.createDiv({ cls: "tl-pane" });
+    renderMessageReaderPane({
+      pane: readerPane,
+      plugin: this.plugin,
+      selectedEmail: this.selectedEmail,
+      renderMode: this.renderMode,
+      allowRemoteImages: this.allowRemoteImagesForCurrent,
+      showStrippedMarkdown: this.showStrippedMarkdown,
+      offlineMode: this.offlineMode,
+      onSaveOptIn: (email, proposal) => {
+        const selectedText = window.getSelection()?.toString() || "";
+        new SaveEmailModal(
+          this.app,
+          this.plugin.settings,
+          this.plugin.projectMatcher,
+          this.plugin.vaultWriter,
+          this.plugin.mruStore,
+          email,
+          selectedText,
+          proposal
+        ).open();
+      },
+      onComposeAction: (email, mode) => this.openComposeForMessage(email, mode),
+      onToggleSeen: async (email) => {
+        if (!email.folder || !email.uid) return;
+        await this.plugin.imapService.setMessageFlag(email.folder, email.uid, "\\Seen", !email.seen);
         email.seen = !email.seen;
         await this.refreshFolder();
-      };
-
-      const aiMoveBtn = actions.createEl("button", {
-        text: `Przenieś wg AI → ${proposal.suggestedImapFolder}`,
-      });
-      aiMoveBtn.onclick = async () => {
+      },
+      onApplyAiMove: async (email, proposal) => {
         await this.plugin.aiBridge.applyProposalToImapMessage(
           this.plugin.imapService,
           email,
@@ -436,75 +451,19 @@ export class MailWorkspaceView extends ItemView {
         this.selectedEmail = null;
         this.selectedUid = null;
         await this.refreshFolder();
-      };
-    }
-
-    // Przełącznik HTML Sandbox / Markdown
-    const modeToggle = actions.createEl("button", {
-      text: this.renderMode === "html" ? "Pokaż Markdown" : "Pokaż HTML Sandbox",
-    });
-    modeToggle.onclick = () => {
-      this.renderMode = this.renderMode === "html" ? "markdown" : "html";
-      this.render();
-    };
-
-    if (this.renderMode === "markdown") {
-      const stripBtn = actions.createEl("button", {
-        text: this.showStrippedMarkdown ? "Pokaż pełne cytaty" : "Oczyść cytaty (Quote-Strip)",
-      });
-      stripBtn.onclick = () => {
+      },
+      onToggleRenderMode: () => {
+        this.renderMode = this.renderMode === "html" ? "markdown" : "html";
+        this.render();
+      },
+      onToggleStripped: () => {
         this.showStrippedMarkdown = !this.showStrippedMarkdown;
         this.render();
-      };
-    }
-
-    // Treść wiadomości: Sandboxowany HTML z blokadą pikseli LUB czysty Markdown
-    if (this.renderMode === "html" && email.htmlBody) {
-      const blockRemote =
-        this.plugin.settings.blockRemoteImagesByDefault && !this.allowRemoteImagesForCurrent;
-      const sanitized = sanitizeHtmlForSandbox(email.htmlBody, blockRemote);
-
-      if (sanitized.blockedRemoteImagesCount > 0) {
-        const banner = reader.createDiv({ cls: "trinitec-mail-banner-warn" });
-        banner.createSpan({
-          text: `Zablokowano ${sanitized.blockedRemoteImagesCount} zdalnych obrazków (ochrona przed pikselami śledzącymi).`,
-        });
-        const allowBtn = banner.createEl("button", { text: "Pokaż obrazy dla tej wiadomości" });
-        allowBtn.onclick = () => {
-          this.allowRemoteImagesForCurrent = true;
-          this.render();
-        };
-      }
-
-      const iframe = reader.createEl("iframe", { cls: "trinitec-mail-html-frame" });
-      iframe.setAttr("sandbox", "allow-same-origin");
-      iframe.srcdoc = sanitized.html;
-    } else {
-      const bodyText = this.showStrippedMarkdown
-        ? email.strippedMarkdownBody
-        : email.markdownBody;
-      reader.createDiv({
-        cls: "trinitec-mail-markdown-preview",
-        text: bodyText,
-      });
-    }
-
-    if (email.attachments.length > 0) {
-      reader.createEl("h4", { text: `Załączniki (${email.attachments.length})` });
-      const attRow = reader.createDiv({ cls: "trinitec-mail-actions-row" });
-      for (const att of email.attachments) {
-        const btn = attRow.createEl("button", {
-          text: `Zapisz: ${att.filename} (${formatBytes(att.size)})`,
-        });
-        btn.onclick = async () => {
-          const matched = this.plugin.projectMatcher.matchEmailToVault(email);
-          const stored = await this.plugin.vaultWriter.saveAttachmentOnlyToProject(
-            att,
-            matched.project
-          );
-          new Notice(`Zapisano załącznik: ${stored}`);
-        };
-      }
-    }
+      },
+      onAllowRemoteImages: () => {
+        this.allowRemoteImagesForCurrent = true;
+        this.render();
+      },
+    });
   }
 }

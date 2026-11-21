@@ -1,8 +1,8 @@
 export type StudioTab = 'install' | 'email-settings' | 'code' | 'simulator' | 'setup';
 
-export type MailProviderPreset = 'roundcube' | 'gmail' | 'custom';
+export type MailProviderPreset = 'roundcube' | 'gmail' | 'outlook' | 'custom';
 
-export type PackageGroup = 'obsidian-plugin' | 'mcp-cli';
+export type PackageGroup = 'obsidian-plugin' | 'mcp-cli' | 'shared';
 
 export type SaveDestinationMode = 'new-file' | 'append-note';
 

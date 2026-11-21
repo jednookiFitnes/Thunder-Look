@@ -1,19 +1,28 @@
-export type SaveDestinationMode = "new-file" | "append-note";
-export type SaveScopeMode = "full" | "selection" | "attachments-only";
-export type AiApplyMode = "suggest" | "auto";
-export type TaskPriority = "high" | "medium" | "low";
-export type MailProviderPreset = "roundcube" | "gmail" | "custom";
+import type {
+  AiApplyMode,
+  MailAuthMethod,
+  MailProviderPreset,
+  SaveDestinationMode,
+  SaveScopeMode,
+  SharedCategoryRule,
+  TaskPriority,
+} from "../../shared/types";
 
-export interface AiCategoryConfig {
-  id: string;
-  label: string;
-  imapFolder: string;
-  vaultTopic: string;
-  keywords: string[];
-}
+export type {
+  AiApplyMode,
+  MailAuthMethod,
+  MailProviderPreset,
+  SaveDestinationMode,
+  SaveScopeMode,
+  TaskPriority,
+};
+
+export type AiCategoryConfig = SharedCategoryRule;
 
 export interface TrinitecPluginSettings {
-  // Struktura wewnętrzna Praca Vault (ścieżki względne wewnątrz dowolnego sejfu, np. OneDrive)
+  settingsVersion: number;
+
+  // Struktura wewnętrzna sejfu Obsidian (ścieżki względne, np. OneDrive)
   activeProjectsDir: string;
   archiveProjectsDir: string;
   contactsDir: string;
@@ -23,9 +32,12 @@ export interface TrinitecPluginSettings {
   masterNotePrefix: string;
   projectSubfolders: string[];
 
-  // Serwer poczty IMAP / SMTP (Roundcube.pl / Gmail / własny hosting)
-  // Uwaga: hasło NIE jest trzymane w data.json — trafia do SecretStorage / localStorage
+  // Serwer poczty IMAP / SMTP (Roundcube / Gmail OAuth2 & App Password / Outlook / własny)
+  // Uwaga: hasła i tokeny OAuth NIGDY nie trafiają do data.json — wyłącznie SecretService
   mailProvider: MailProviderPreset;
+  mailAuthMethod: MailAuthMethod;
+  serverDomain: string;
+  googleOAuthClientId: string;
   imapHost: string;
   imapPort: number;
   imapSecure: boolean;
@@ -34,6 +46,7 @@ export interface TrinitecPluginSettings {
   smtpPort: number;
   smtpSecure: boolean;
   senderName: string;
+  emailSignature: string;
   inboxFolder: string;
   sentFolder: string;
   archiveFolder: string;
@@ -41,7 +54,7 @@ export interface TrinitecPluginSettings {
   allowlistFolder: string;
   quotaWarnPercent: number;
 
-  // Ulepszenia architektury IMAP (wzorce z Oxill Mail / Mailstone / Himalaya)
+  // Bezpieczeństwo i zachowanie IMAP
   enableImapIdle: boolean;
   nonIntrusivePeek: boolean;
   appendSentToImap: boolean;
@@ -49,6 +62,7 @@ export interface TrinitecPluginSettings {
   blockRemoteImagesByDefault: boolean;
   saveRawEmlCopy: boolean;
   strictTlsVerification: boolean;
+  maxAttachmentSizeMb: number;
 
   // Polityka ręcznego zapisu Opt-in
   optInStrictMode: boolean;
@@ -74,6 +88,8 @@ export interface TrinitecPluginSettings {
 }
 
 export const DEFAULT_SETTINGS: TrinitecPluginSettings = {
+  settingsVersion: 2,
+
   activeProjectsDir: "11 - Notes - Trinitec Projekty",
   archiveProjectsDir: "12 - Notes - Trinitec Archiwum",
   contactsDir: "11 - Notes - Trinitec Projekty/kontakty",
@@ -84,14 +100,18 @@ export const DEFAULT_SETTINGS: TrinitecPluginSettings = {
   projectSubfolders: ["Zamówienia", "Rysunki", "Attachments"],
 
   mailProvider: "roundcube",
-  imapHost: "imap.roundcube.pl",
+  mailAuthMethod: "password",
+  serverDomain: "trinitec.pl",
+  googleOAuthClientId: "",
+  imapHost: "trinitec.pl",
   imapPort: 993,
   imapSecure: true,
   imapUser: "",
-  smtpHost: "smtp.roundcube.pl",
+  smtpHost: "trinitec.pl",
   smtpPort: 465,
   smtpSecure: true,
   senderName: "Piotr Świerk",
+  emailSignature: "Pozdrawiam,\nPiotr Świerk",
   inboxFolder: "INBOX",
   sentFolder: "Sent",
   archiveFolder: "Archive",
@@ -106,6 +126,7 @@ export const DEFAULT_SETTINGS: TrinitecPluginSettings = {
   blockRemoteImagesByDefault: true,
   saveRawEmlCopy: false,
   strictTlsVerification: true,
+  maxAttachmentSizeMb: 25,
 
   optInStrictMode: true,
   defaultSaveMode: "new-file",
@@ -170,12 +191,16 @@ export interface ParsedEmailMessage {
   messageId?: string;
   inReplyTo?: string;
   references?: string[];
+  threadId: string;
+  contentHash: string;
   date: string; // YYYY-MM-DD
   dateTimeIso: string;
   fromName: string;
   fromEmail: string;
   fromRaw: string;
   toRaw: string;
+  ccRaw?: string;
+  replyToRaw?: string;
   subject: string;
   textBody: string;
   htmlBody?: string;
@@ -282,11 +307,12 @@ export interface ImapConnectionTestOverride {
   user?: string;
   password?: string;
   strictTls?: boolean;
+  authMethod?: MailAuthMethod;
 }
 
 export interface ImapConnectionTestResult {
   ok: boolean;
-  providerDetected: "gmail" | "roundcube" | "imap";
+  providerDetected: "gmail" | "outlook" | "roundcube" | "imap";
   latencyMs: number;
   host: string;
   port: number;
@@ -303,4 +329,29 @@ export interface ImapConnectionTestResult {
   smtpMessage?: string;
   error?: string;
   hint?: string;
+}
+
+export interface DiagnosticStepResult {
+  step: "imap" | "smtp" | "vault";
+  label: string;
+  ok: boolean;
+  summary: string;
+  details?: string;
+  hint?: string;
+}
+
+export interface FullDiagnosticsReport {
+  ok: boolean;
+  ranAt: string;
+  steps: DiagnosticStepResult[];
+  imapResult: ImapConnectionTestResult;
+}
+
+export type ConnectionHealthState = "idle" | "syncing" | "connected" | "offline" | "error";
+
+export interface PluginRuntimeStatus {
+  state: ConnectionHealthState;
+  lastSyncAt: Date | null;
+  unreadCount: number;
+  lastError: string | null;
 }

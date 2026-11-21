@@ -3,10 +3,15 @@ import path from 'node:path';
 import type { AppConfig, PriorityLevel } from './config.js';
 import type { ParsedEmailFull } from './imapService.js';
 import {
+  assertSafeRelativeVaultPath,
+  isCloudLockFile,
+  isDangerousAttachmentExtension,
+  sanitizeFilename,
+} from '../../shared/pathSecurity.js';
+import {
   formatObsidianTaskLine,
   naturalCompare,
   processLinesCrlfSafe,
-  sanitizeFilename,
 } from './textUtils.js';
 
 export interface VaultProject {
@@ -43,26 +48,43 @@ export class VaultService {
   private assertVaultPath(): string {
     if (!this.config.vaultPath) {
       throw new Error(
-        'Brak skonfigurowanej ścieżki OBSIDIAN_VAULT_PATH. Ustaw zmienną środowiskową na katalog Twojego sejfu (np. w OneDrive).'
+        'Brak skonfigurowanej ścieżki OBSIDIAN_VAULT_PATH. Ustaw zmienną środowiskową na katalog Twojego sejfu.'
       );
     }
     const resolved = path.resolve(this.config.vaultPath);
     if (!fs.existsSync(resolved)) {
       throw new Error(`Katalog OBSIDIAN_VAULT_PATH nie istnieje: ${resolved}`);
     }
-    return resolved;
+    return fs.realpathSync(resolved);
   }
 
   /**
-   * Zabezpieczenie przed path traversal — każda operacja musi pozostać wewnątrz sejfu Obsidian.
+   * Twarda izolacja ścieżek wewnątrz sejfu Obsidian:
+   * - Waliduje ścieżkę przez shared/pathSecurity (blokuje .., NULL, znaki kontrolne i ścieżki absolutne)
+   * - Weryfikuje realpathSync dla istniejących katalogów nadrzędnych, aby zablokować ucieczkę przez symlinki
    */
   private resolveSafeVaultPath(relativePath: string): string {
     const vaultRoot = this.assertVaultPath();
-    const cleaned = relativePath.replace(/^[/\\]+/, '');
-    const full = path.resolve(vaultRoot, cleaned);
+    const safeRel = assertSafeRelativeVaultPath(relativePath);
+    const full = path.resolve(vaultRoot, safeRel);
     if (full !== vaultRoot && !full.startsWith(vaultRoot + path.sep)) {
-      throw new Error(`Niedozwolona ścieżka poza katalogiem sejfu: ${relativePath}`);
+      throw new Error(`Zablokowano ścieżkę poza katalogiem sejfu: ${relativePath}`);
     }
+
+    // Sprawdź symlinki na najbliższym istniejącym katalogu nadrzędnym
+    let probe = full;
+    while (!fs.existsSync(probe) && probe !== vaultRoot) {
+      const parent = path.dirname(probe);
+      if (parent === probe) break;
+      probe = parent;
+    }
+    if (fs.existsSync(probe)) {
+      const realProbe = fs.realpathSync(probe);
+      if (realProbe !== vaultRoot && !realProbe.startsWith(vaultRoot + path.sep)) {
+        throw new Error(`Zablokowano ucieczkę symlinkiem poza katalog sejfu: ${relativePath}`);
+      }
+    }
+
     return full;
   }
 
@@ -71,12 +93,13 @@ export class VaultService {
     const projects: VaultProject[] = [];
 
     const scanRoot = (relDir: string, isArchived: boolean) => {
-      const fullDir = path.join(vaultRoot, relDir);
+      const fullDir = path.join(vaultRoot, assertSafeRelativeVaultPath(relDir));
       if (!fs.existsSync(fullDir)) return;
 
       const entries = fs.readdirSync(fullDir, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
+        if (isCloudLockFile(entry.name)) continue;
         if (entry.name.toLowerCase() === 'kontakty' || entry.name.startsWith('.')) continue;
 
         const match = entry.name.match(/^(\d{2}-\d{3})\s*-\s*([^-]+?)\s*-\s*(.+)$/);
@@ -124,14 +147,17 @@ export class VaultService {
 
   listVaultContacts(): VaultContact[] {
     const vaultRoot = this.assertVaultPath();
-    const contactsDir = path.join(vaultRoot, this.config.vaultStructure.contactsDir);
+    const contactsDir = path.join(
+      vaultRoot,
+      assertSafeRelativeVaultPath(this.config.vaultStructure.contactsDir)
+    );
     if (!fs.existsSync(contactsDir)) return [];
 
     const contacts: VaultContact[] = [];
     const entries = fs.readdirSync(contactsDir, { withFileTypes: true });
 
     for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      if (!entry.isFile() || !entry.name.endsWith('.md') || isCloudLockFile(entry.name)) continue;
       const fullPath = path.join(contactsDir, entry.name);
       const raw = fs.readFileSync(fullPath, 'utf8');
       const fm = readSimpleFrontmatter(raw);
@@ -168,34 +194,37 @@ export class VaultService {
     return contacts;
   }
 
-  findDuplicateByMessageId(messageId: string): string | null {
-    if (!messageId) return null;
-    const vaultRoot = this.assertVaultPath();
-    const targetNeedle = messageId.trim().replace(/^["']|["']$/g, '');
-    if (!targetNeedle) return null;
+  findDuplicateByMessageId(messageId: string, contentHash?: string): string | null {
+    const targetNeedle = messageId?.trim().replace(/^["']|["']$/g, '') || '';
+    const hashNeedle = contentHash?.trim() || '';
+    if (!targetNeedle && !hashNeedle) return null;
 
+    const vaultRoot = this.assertVaultPath();
     const searchDirs = [
-      path.join(vaultRoot, this.config.vaultStructure.projectsDir),
-      path.join(vaultRoot, this.config.vaultStructure.archiveDir),
+      path.join(vaultRoot, assertSafeRelativeVaultPath(this.config.vaultStructure.projectsDir)),
+      path.join(vaultRoot, assertSafeRelativeVaultPath(this.config.vaultStructure.archiveDir)),
     ];
 
     const walk = (dir: string): string | null => {
       if (!fs.existsSync(dir)) return null;
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
+        if (isCloudLockFile(entry.name)) continue;
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           if (entry.name.startsWith('.') || entry.name === 'Attachments') continue;
           const found = walk(full);
           if (found) return found;
         } else if (entry.isFile() && entry.name.endsWith('.md')) {
-          // Odczyt pierwszych 1.5 KB (frontmatter) wystarcza do deduplikacji
           const fd = fs.openSync(full, 'r');
           try {
-            const buf = Buffer.alloc(1536);
+            const buf = Buffer.alloc(2048);
             const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
             const head = buf.toString('utf8', 0, bytesRead);
-            if (head.includes('message_id:') && head.includes(targetNeedle)) {
+            if (
+              (targetNeedle && head.includes('message_id:') && head.includes(targetNeedle)) ||
+              (hashNeedle && head.includes('content_hash:') && head.includes(hashNeedle))
+            ) {
               return path.relative(vaultRoot, full).replace(/\\/g, '/');
             }
           } finally {
@@ -218,19 +247,20 @@ export class VaultService {
     body: string;
     fromEmail: string;
     messageId?: string;
+    contentHash?: string;
     projectCodeRegex?: string;
   }): MatchResult {
     const projects = this.listVaultProjects(true);
     const contacts = this.listVaultContacts();
 
-    const duplicateNotePath = params.messageId
-      ? this.findDuplicateByMessageId(params.messageId)
-      : null;
+    const duplicateNotePath = this.findDuplicateByMessageId(
+      params.messageId || '',
+      params.contentHash
+    );
 
     const matchedContact =
       contacts.find((c) => c.emails.includes(params.fromEmail.toLowerCase())) || null;
 
-    // 1. Dopasowanie po kodzie projektu (YY-XXX) w temacie lub treści
     const combined = `${params.subject}\n${params.body}`;
     let matchedProject: VaultProject | null = null;
     let matchReason = 'Brak automatycznego dopasowania';
@@ -250,7 +280,6 @@ export class VaultService {
       // ignoruj nieprawidłowy regex
     }
 
-    // 2. Fallback: dopasowanie po kontakcie -> powiązany projekt (index) lub nazwa klienta
     if (!matchedProject && matchedContact) {
       for (const linked of matchedContact.linkedProjects) {
         const found = projects.find(
@@ -282,10 +311,6 @@ export class VaultService {
     };
   }
 
-  /**
-   * Ścisły zapis Opt-in: zapisuje wyłącznie jawnie wskazany mail lub zaznaczony fragment
-   * jako osobny plik Markdown lub dopisuje do wskazanej notatki.
-   */
   saveEmailExplicitToVault(params: {
     email: ParsedEmailFull;
     projectFolderRelativePath: string;
@@ -301,16 +326,21 @@ export class VaultService {
   }): {
     noteRelativePath: string;
     savedAttachments: string[];
+    skippedDangerousAttachments: string[];
     emlRelativePath: string | null;
     duplicateWarning: string | null;
   } {
-    const duplicateWarning = this.findDuplicateByMessageId(params.email.messageId);
+    const duplicateWarning = this.findDuplicateByMessageId(
+      params.email.messageId,
+      params.email.contentHash
+    );
     const projectFull = this.resolveSafeVaultPath(params.projectFolderRelativePath);
 
     const savedAttachments: string[] = [];
+    const skippedDangerousAttachments: string[] = [];
     if (params.saveAttachments && params.email.attachments.length > 0) {
       const attRelDir = path.posix.join(
-        params.projectFolderRelativePath.replace(/\\/g, '/'),
+        assertSafeRelativeVaultPath(params.projectFolderRelativePath),
         'Attachments'
       );
       const attFullDir = this.resolveSafeVaultPath(attRelDir);
@@ -318,6 +348,10 @@ export class VaultService {
 
       const datePrefix = params.email.date.slice(0, 10);
       for (const att of params.email.attachments) {
+        if (isDangerousAttachmentExtension(att.filename)) {
+          skippedDangerousAttachments.push(att.filename);
+          continue;
+        }
         const safeName = `${datePrefix} - ${sanitizeFilename(att.filename, 100)}`;
         const attFullPath = this.resolveSafeVaultPath(path.posix.join(attRelDir, safeName));
         fs.writeFileSync(attFullPath, att.content);
@@ -328,7 +362,7 @@ export class VaultService {
     let emlRelativePath: string | null = null;
     if (params.saveEmlCopy && params.email.rawEml.length > 0) {
       const attRelDir = path.posix.join(
-        params.projectFolderRelativePath.replace(/\\/g, '/'),
+        assertSafeRelativeVaultPath(params.projectFolderRelativePath),
         'Attachments'
       );
       const attFullDir = this.resolveSafeVaultPath(attRelDir);
@@ -373,15 +407,16 @@ export class VaultService {
       return {
         noteRelativePath: params.targetAppendNoteRelativePath,
         savedAttachments,
+        skippedDangerousAttachments,
         emlRelativePath,
         duplicateWarning,
       };
     }
 
-    // Tryb new-file
+    const safeProjectRel = assertSafeRelativeVaultPath(params.projectFolderRelativePath);
     const targetDirRel = params.subfolder
-      ? path.posix.join(params.projectFolderRelativePath.replace(/\\/g, '/'), params.subfolder)
-      : params.projectFolderRelativePath.replace(/\\/g, '/');
+      ? path.posix.join(safeProjectRel, sanitizeFilename(params.subfolder, 60))
+      : safeProjectRel;
     const targetDirFull = this.resolveSafeVaultPath(targetDirRel);
     fs.mkdirSync(targetDirFull, { recursive: true });
 
@@ -416,12 +451,14 @@ export class VaultService {
       `date: ${params.email.date}`,
       `message_id: "${escapeYaml(params.email.messageId)}"`,
       ...(params.email.inReplyTo ? [`in_reply_to: "${escapeYaml(params.email.inReplyTo)}"`] : []),
+      `thread_id: "${escapeYaml(params.email.threadId)}"`,
+      `content_hash: "${escapeYaml(params.email.contentHash)}"`,
       `imap_folder: "${escapeYaml(params.email.folder)}"`,
       `imap_uid: ${params.email.uid}`,
       `category: "${escapeYaml(params.category || 'Korespondencja')}"`,
       `priority: "${params.priority || 'medium'}"`,
       `saved_mode: "${params.excerptOnly ? 'excerpt' : 'full'}"`,
-      `tags: [email, trinitec]`,
+      `tags: [email, thunder-look]`,
       `${attachmentYaml.trimStart()}${emlYaml}`,
       '---',
       '',
@@ -451,14 +488,12 @@ export class VaultService {
     return {
       noteRelativePath: noteRelPath,
       savedAttachments,
+      skippedDangerousAttachments,
       emlRelativePath,
       duplicateWarning,
     };
   }
 
-  /**
-   * Dodaje zadanie Obsidian Tasks do notatki głównej projektu (CRLF-safe).
-   */
   appendObsidianTask(params: {
     targetNoteRelativePath: string;
     description: string;
@@ -496,9 +531,6 @@ export class VaultService {
     };
   }
 
-  /**
-   * Bezpiecznie przenosi wygenerowaną notatkę Markdown do wskazanego folderu wewnątrz Vaulta.
-   */
   moveVaultNoteToFolder(params: {
     noteRelativePath: string;
     destinationFolderRelativePath: string;
@@ -508,14 +540,12 @@ export class VaultService {
       throw new Error(`Nie znaleziono notatki Markdown: ${params.noteRelativePath}`);
     }
 
-    const destDirFull = this.resolveSafeVaultPath(params.destinationFolderRelativePath);
+    const safeDestDir = assertSafeRelativeVaultPath(params.destinationFolderRelativePath);
+    const destDirFull = this.resolveSafeVaultPath(safeDestDir);
     fs.mkdirSync(destDirFull, { recursive: true });
 
-    const fileName = path.basename(srcFull);
-    const destRel = path.posix.join(
-      params.destinationFolderRelativePath.replace(/\\/g, '/'),
-      fileName
-    );
+    const fileName = sanitizeFilename(path.basename(srcFull, '.md')) + '.md';
+    const destRel = path.posix.join(safeDestDir, fileName);
     const destFull = this.resolveSafeVaultPath(destRel);
 
     fs.renameSync(srcFull, destFull);

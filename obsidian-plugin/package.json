@@ -1,7 +1,8 @@
 {
-  "name": "trinitec-mail-project-manager",
+  "name": "thunder-look",
   "version": "1.0.0",
-  "description": "Wtyczka Obsidian: klient IMAP/SMTP (Roundcube), monitor zajętości skrzynki, świadomy zapis Opt-in i zarządzanie projektami w Praca Vault.",
+  "author": "Piotr Świerk",
+  "description": "Thunder Look — wtyczka Obsidian: klient IMAP/SMTP (Roundcube, Gmail OAuth2/App Password, Outlook), monitor zajętości skrzynki, świadomy zapis Opt-in i zarządzanie projektami.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
@@ -10,6 +11,8 @@
     "version-bump": "node scripts/version-bump.mjs"
   },
   "dependencies": {
+    "@types/dompurify": "^3.0.5",
+    "dompurify": "^3.4.18",
     "imapflow": "^1.0.171",
     "mailparser": "^3.7.2",
     "nodemailer": "^6.9.16",

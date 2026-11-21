@@ -1,21 +1,24 @@
 import { FileView, TFile, WorkspaceLeaf } from "obsidian";
 import { ParsedEmailMessage } from "../types";
 import { parseRawEmlBuffer } from "../services/mailParserService";
-import { formatBytes, sanitizeHtmlForSandbox } from "../utils/textUtils";
+import { sanitizeHtmlForSandbox } from "../utils/htmlSanitizer";
+import { formatBytes } from "../utils/textUtils";
 import { SaveEmailModal } from "../modals/SaveEmailModal";
 import type TrinitecMailPlugin from "../main";
 
 export const VIEW_TYPE_TRINITEC_EML = "trinitec-mail-eml-viewer";
 
 /**
- * Wbudowany podgląd plików .eml w Vaulcie (wzorzec z obsidian-eml-email-viewer):
- * umożliwia czytanie zarchiwizowanych plików dowodowych .eml z blokadą pikseli śledzących.
+ * Wbudowany bezpieczny podgląd plików .eml w Vaulcie:
+ * - DOMPurify + <iframe sandbox=""> (bez allow-scripts i bez allow-same-origin)
+ * - Domyślna blokada zdalnych obrazków i pikseli śledzących z przyciskiem ręcznego doładowania
  */
 export class EmlViewerView extends FileView {
   private plugin: TrinitecMailPlugin;
   private parsed: ParsedEmailMessage | null = null;
   private mode: "html" | "markdown" = "html";
   private allowRemoteImages = false;
+  private isClosed = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: TrinitecMailPlugin) {
     super(leaf);
@@ -27,7 +30,7 @@ export class EmlViewerView extends FileView {
   }
 
   getDisplayText(): string {
-    return this.file ? this.file.basename : "Podgląd EML";
+    return this.file ? this.file.basename : "Podgląd EML (Thunder Look)";
   }
 
   canAcceptExtension(extension: string): boolean {
@@ -35,14 +38,18 @@ export class EmlViewerView extends FileView {
   }
 
   async onLoadFile(file: TFile): Promise<void> {
+    this.isClosed = false;
     const bin = await this.app.vault.readBinary(file);
+    if (this.isClosed) return;
     this.parsed = await parseRawEmlBuffer(Buffer.from(bin));
+    if (this.isClosed) return;
     this.mode = this.parsed.htmlBody ? "html" : "markdown";
     this.allowRemoteImages = false;
     this.render();
   }
 
   async onClose(): Promise<void> {
+    this.isClosed = true;
     this.parsed = null;
     this.contentEl.empty();
   }
@@ -50,27 +57,28 @@ export class EmlViewerView extends FileView {
   private render(): void {
     const container = this.contentEl;
     container.empty();
-    const root = container.createDiv({ cls: "trinitec-mail-reader" });
+    const root = container.createDiv({ cls: "tl-reader" });
 
     if (!this.parsed) {
-      root.createDiv({ cls: "trinitec-mail-status-text", text: "Wczytywanie pliku .eml..." });
+      root.createDiv({ cls: "tl-status-text", text: "Wczytywanie pliku .eml..." });
       return;
     }
 
     const email = this.parsed;
-    const head = root.createDiv({ cls: "trinitec-mail-reader-head" });
-    head.createEl("h3", { cls: "trinitec-mail-reader-title", text: email.subject });
+    const head = root.createDiv({ cls: "tl-reader-head" });
+    head.createEl("h3", { cls: "tl-reader-title", text: email.subject });
     head.createDiv({
-      cls: "trinitec-mail-status-text",
+      cls: "tl-status-text",
       text: `Od: ${email.fromRaw} · Do: ${email.toRaw} · ${email.date} · ${formatBytes(email.sizeBytes)}`,
     });
 
-    const actions = head.createDiv({ cls: "trinitec-mail-actions-row" });
+    const actions = head.createDiv({ cls: "tl-actions-row" });
     const saveNoteBtn = actions.createEl("button", {
       text: "Zapisz jako notatkę projektu (Opt-in)",
+      type: "button",
       cls: "mod-cta",
     });
-    saveNoteBtn.onclick = () => {
+    saveNoteBtn.addEventListener("click", () => {
       const proposal = this.plugin.aiBridge.analyzeContent(
         email.subject,
         email.strippedMarkdownBody
@@ -85,37 +93,41 @@ export class EmlViewerView extends FileView {
         "",
         proposal
       ).open();
-    };
+    });
 
     const toggleBtn = actions.createEl("button", {
       text: this.mode === "html" ? "Pokaż Markdown" : "Pokaż HTML Sandbox",
+      type: "button",
     });
-    toggleBtn.onclick = () => {
+    toggleBtn.addEventListener("click", () => {
       this.mode = this.mode === "html" ? "markdown" : "html";
       this.render();
-    };
+    });
 
     if (this.mode === "html" && email.htmlBody) {
       const blockRemote =
         this.plugin.settings.blockRemoteImagesByDefault && !this.allowRemoteImages;
-      const sanitized = sanitizeHtmlForSandbox(email.htmlBody, blockRemote);
+      const isDark = document.body.classList.contains("theme-dark");
+      const sanitized = sanitizeHtmlForSandbox(email.htmlBody, blockRemote, isDark);
+
       if (sanitized.blockedRemoteImagesCount > 0) {
-        const warn = root.createDiv({ cls: "trinitec-mail-banner-warn" });
+        const warn = root.createDiv({ cls: "tl-banner-warn" });
         warn.createSpan({
-          text: `Zablokowano ${sanitized.blockedRemoteImagesCount} zdalnych obrazków.`,
+          text: `Zablokowano ${sanitized.blockedRemoteImagesCount} zdalnych obrazków / pikseli śledzących.`,
         });
-        const btn = warn.createEl("button", { text: "Pokaż obrazy" });
-        btn.onclick = () => {
+        const btn = warn.createEl("button", { text: "Doładuj obrazy", type: "button" });
+        btn.addEventListener("click", () => {
           this.allowRemoteImages = true;
           this.render();
-        };
+        });
       }
-      const iframe = root.createEl("iframe", { cls: "trinitec-mail-html-frame" });
-      iframe.setAttr("sandbox", "allow-same-origin");
+      const iframe = root.createEl("iframe", { cls: "tl-html-frame" });
+      iframe.setAttr("sandbox", "");
+      iframe.setAttr("referrerpolicy", "no-referrer");
       iframe.srcdoc = sanitized.html;
     } else {
       root.createDiv({
-        cls: "trinitec-mail-markdown-preview",
+        cls: "tl-markdown-preview",
         text: email.markdownBody,
       });
     }

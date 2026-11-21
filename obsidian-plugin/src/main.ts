@@ -1,7 +1,13 @@
 import { Notice, Plugin, TFile } from "obsidian";
-import { DEFAULT_SETTINGS, TrinitecPluginSettings } from "./types";
+import {
+  DEFAULT_SETTINGS,
+  PluginRuntimeStatus,
+  TrinitecPluginSettings,
+} from "./types";
 import { MruStore } from "./utils/mruStore";
+import { migrateAndValidateSettings } from "./utils/settingsMigration";
 import { SecretService } from "./services/secretService";
+import { GoogleOAuthService } from "./services/googleOAuthService";
 import { MailCacheService } from "./services/mailCacheService";
 import { ImapService } from "./services/imapService";
 import { SmtpService } from "./services/smtpService";
@@ -24,6 +30,7 @@ export default class TrinitecMailPlugin extends Plugin {
   settings: TrinitecPluginSettings = DEFAULT_SETTINGS;
   mruStore!: MruStore;
   secretService!: SecretService;
+  googleOAuthService!: GoogleOAuthService;
   cacheService!: MailCacheService;
   imapService!: ImapService;
   smtpService!: SmtpService;
@@ -32,14 +39,34 @@ export default class TrinitecMailPlugin extends Plugin {
   projectLifecycle!: ProjectLifecycleService;
   aiBridge!: AiBridgeService;
 
+  runtimeStatus: PluginRuntimeStatus = {
+    state: "idle",
+    lastSyncAt: null,
+    unreadCount: 0,
+    lastError: null,
+  };
+
+  private statusBarItemEl: HTMLElement | null = null;
+
   async onload(): Promise<void> {
     await this.loadSettings();
 
     this.mruStore = new MruStore(this.app);
     this.secretService = new SecretService(this.app);
+    this.googleOAuthService = new GoogleOAuthService(this.secretService);
     this.cacheService = new MailCacheService();
-    this.imapService = new ImapService(this.settings, this.secretService, this.cacheService);
-    this.smtpService = new SmtpService(this.settings, this.secretService, this.imapService);
+    this.imapService = new ImapService(
+      this.settings,
+      this.secretService,
+      this.cacheService,
+      this.googleOAuthService
+    );
+    this.smtpService = new SmtpService(
+      this.settings,
+      this.secretService,
+      this.imapService,
+      this.googleOAuthService
+    );
     this.projectMatcher = new ProjectMatcherService(this.app, this.settings, this.mruStore);
     this.vaultWriter = new VaultWriterService(this.app, this.settings, this.mruStore);
     this.projectLifecycle = new ProjectLifecycleService(this.app, this.settings);
@@ -51,49 +78,66 @@ export default class TrinitecMailPlugin extends Plugin {
     this.registerView(VIEW_TYPE_TRINITEC_EML, (leaf) => new EmlViewerView(leaf, this));
     this.registerExtensions(["eml"], VIEW_TYPE_TRINITEC_EML);
 
-    // Odporny procesor bloku kodu ```trinitec-mail```
-    this.registerMarkdownCodeBlockProcessor("trinitec-mail", (source, el, ctx) => {
-      ctx.addChild(new TrinitecMailCodeBlockChild(el, this.app, source, ctx));
+    // Procesor bloku kodu ```thunder-look``` oraz zachowana kompatybilność z ```trinitec-mail```
+    const registerBlock = (lang: string) => {
+      this.registerMarkdownCodeBlockProcessor(lang, (source, el, ctx) => {
+        ctx.addChild(new TrinitecMailCodeBlockChild(el, this.app, source, ctx));
+      });
+    };
+    registerBlock("thunder-look");
+    registerBlock("trinitec-mail");
+
+    // Pasek stanu (Status Bar) — stan połączenia, ostatnia synchronizacja, liczba nieprzeczytanych
+    this.statusBarItemEl = this.addStatusBarItem();
+    this.statusBarItemEl.addClass("tl-statusbar-item");
+    this.registerDomEvent(this.statusBarItemEl, "click", () => {
+      void this.activateMailView();
     });
+    this.renderStatusBar();
 
     // Ikony w pasku bocznym (Ribbon)
-    this.addRibbonIcon("mail", "Trinitec: Otwórz klienta IMAP", () => {
+    this.addRibbonIcon("mail", "Thunder Look: Otwórz klienta IMAP", () => {
       void this.activateMailView();
     });
 
-    this.addRibbonIcon("hard-drive", "Trinitec: Podgląd rozmiaru skrzynki IMAP", () => {
+    this.addRibbonIcon("hard-drive", "Thunder Look: Podgląd rozmiaru skrzynki IMAP", () => {
       void this.activateStorageView();
     });
 
     // Komendy palety poleceń
     this.addCommand({
-      id: "trinitec-open-mail-view",
-      name: "Trinitec: Otwórz skrzynkę IMAP",
+      id: "thunder-look-open-mail-view",
+      name: "Otwórz skrzynkę IMAP",
       callback: () => void this.activateMailView(),
     });
 
     this.addCommand({
-      id: "trinitec-open-storage-view",
-      name: "Trinitec: Podgląd rozmiaru skrzynki i folderów",
+      id: "thunder-look-open-storage-view",
+      name: "Podgląd rozmiaru skrzynki i folderów",
       callback: () => void this.activateStorageView(),
     });
 
     this.addCommand({
-      id: "trinitec-compose-email",
-      name: "Trinitec: Wyślij nowy e-mail (SMTP)",
+      id: "thunder-look-compose-email",
+      name: "Wyślij nowy e-mail (SMTP)",
       callback: () => {
+        const signature = this.settings.emailSignature.trim()
+          ? `\n\n-- \n${this.settings.emailSignature.trim()}`
+          : "";
         new ComposeMailModal(
           this.app,
+          this.settings,
           this.smtpService,
           this.projectMatcher,
-          this.mruStore
+          this.mruStore,
+          { body: signature }
         ).open();
       },
     });
 
     this.addCommand({
-      id: "trinitec-parse-clipboard",
-      name: "Trinitec: Parse email from clipboard",
+      id: "thunder-look-parse-clipboard",
+      name: "Wklej i zapisz e-mail ze schowka",
       callback: async () => {
         const raw = await navigator.clipboard.readText();
         if (!raw.trim()) {
@@ -116,14 +160,14 @@ export default class TrinitecMailPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "trinitec-create-project",
-      name: "Trinitec: Create new project",
+      id: "thunder-look-create-project",
+      name: "Utwórz nowy projekt",
       callback: () => new NewProjectModal(this.app, this.projectLifecycle).open(),
     });
 
     this.addCommand({
-      id: "trinitec-archive-project",
-      name: "Trinitec: Archive active project",
+      id: "thunder-look-archive-project",
+      name: "Zarchiwizuj aktywny projekt",
       callback: () => {
         const projects = this.projectMatcher.listActiveProjects(true);
         new ArchiveProjectModal(this.app, projects, async (proj) => {
@@ -133,8 +177,8 @@ export default class TrinitecMailPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "trinitec-ai-analyze-active-note",
-      name: "Trinitec: Analizuj aktywną notatkę (AI: kategoria, priorytet, zadania)",
+      id: "thunder-look-ai-analyze-active-note",
+      name: "Analizuj aktywną notatkę (AI: kategoria, priorytet, zadania)",
       callback: async () => {
         const file = this.app.workspace.getActiveFile();
         if (!(file instanceof TFile)) {
@@ -155,19 +199,23 @@ export default class TrinitecMailPlugin extends Plugin {
       if (!emlFile) return;
 
       evt.preventDefault();
-      const buffer = Buffer.from(await emlFile.arrayBuffer());
-      const parsed = await parseRawEmlBuffer(buffer);
-      const proposal = this.aiBridge.analyzeContent(parsed.subject, parsed.strippedMarkdownBody);
-      new SaveEmailModal(
-        this.app,
-        this.settings,
-        this.projectMatcher,
-        this.vaultWriter,
-        this.mruStore,
-        parsed,
-        "",
-        proposal
-      ).open();
+      try {
+        const buffer = Buffer.from(await emlFile.arrayBuffer());
+        const parsed = await parseRawEmlBuffer(buffer);
+        const proposal = this.aiBridge.analyzeContent(parsed.subject, parsed.strippedMarkdownBody);
+        new SaveEmailModal(
+          this.app,
+          this.settings,
+          this.projectMatcher,
+          this.vaultWriter,
+          this.mruStore,
+          parsed,
+          "",
+          proposal
+        ).open();
+      } catch (err) {
+        new Notice(`Nie udało się przetworzyć pliku .eml: ${(err as Error).message}`);
+      }
     });
 
     this.addSettingTab(new TrinitecSettingTab(this.app, this));
@@ -176,7 +224,7 @@ export default class TrinitecMailPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       if (this.settings.enableImapIdle && this.settings.imapHost && this.settings.imapUser) {
         void this.imapService.startIdleWatcher((folder) => {
-          new Notice(`Nowa wiadomość w folderze ${folder}`);
+          new Notice(`Thunder Look: nowa wiadomość w folderze ${folder}`);
           const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_TRINITEC_MAIL);
           for (const leaf of leaves) {
             if (leaf.view instanceof MailWorkspaceView) {
@@ -189,13 +237,38 @@ export default class TrinitecMailPlugin extends Plugin {
   }
 
   /**
-   * Zgodnie z AGENTS.md:
-   * NIGDY nie wywołuj detachLeavesOfType() w onunload() — chroni to układ okien użytkownika.
-   * Zamykamy wyłącznie globalne połączenie IMAP IDLE oraz lokalny uchwyt IndexedDB.
+   * Zgodnie z wytycznymi Obsidian Plugin Guidelines:
+   * NIGDY nie wywołuj detachLeavesOfType() w onunload() — nie niszczymy układu okien użytkownika.
    */
   onunload(): void {
     void this.imapService?.stopIdleWatcher();
     this.cacheService?.close();
+  }
+
+  updateRuntimeStatus(partial: Partial<PluginRuntimeStatus>): void {
+    this.runtimeStatus = { ...this.runtimeStatus, ...partial };
+    this.renderStatusBar();
+  }
+
+  private renderStatusBar(): void {
+    if (!this.statusBarItemEl) return;
+    const { state, lastSyncAt, unreadCount, lastError } = this.runtimeStatus;
+    const syncLabel = lastSyncAt ? lastSyncAt.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }) : "—";
+    let stateLabel = "Gotowy";
+    if (state === "syncing") stateLabel = "Synchronizacja...";
+    else if (state === "connected") stateLabel = "Połączono";
+    else if (state === "offline") stateLabel = "Offline (cache)";
+    else if (state === "error") stateLabel = "Błąd IMAP";
+
+    this.statusBarItemEl.setText(
+      `Thunder Look: ${stateLabel} · Nieprzecz.: ${unreadCount} · Sync: ${syncLabel}`
+    );
+    this.statusBarItemEl.setAttr(
+      "title",
+      lastError
+        ? `Thunder Look — ${lastError}. Kliknij, aby otworzyć pocztę.`
+        : "Kliknij, aby otworzyć skrzynkę Thunder Look"
+    );
   }
 
   async activateMailView(): Promise<void> {
@@ -219,8 +292,12 @@ export default class TrinitecMailPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    const loaded = (await this.loadData()) as Partial<TrinitecPluginSettings> | null;
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded || {});
+    const rawLoaded = (await this.loadData()) as Record<string, unknown> | null;
+    const prevVersion = rawLoaded && typeof rawLoaded === "object" ? rawLoaded.settingsVersion : 0;
+    this.settings = migrateAndValidateSettings(rawLoaded);
+    if (prevVersion !== this.settings.settingsVersion) {
+      await this.saveData(this.settings);
+    }
   }
 
   async saveSettings(): Promise<void> {

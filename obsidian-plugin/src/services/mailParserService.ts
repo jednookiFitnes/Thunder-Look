@@ -1,6 +1,11 @@
 import { simpleParser } from "mailparser";
 import TurndownService from "turndown";
+import {
+  buildCanonicalThreadId,
+  computeContentHash,
+} from "../../../shared/textUtils";
 import { EmailThreadGroup, ImapMessageHeader, ParsedEmailMessage } from "../types";
+import { stripHtmlToSafeMarkup } from "../utils/htmlSanitizer";
 import {
   normalizeLineEndings,
   normalizeSubjectForThread,
@@ -13,11 +18,15 @@ const turndown = new TurndownService({
   codeBlockStyle: "fenced",
 });
 
+/**
+ * Konwertuje HTML na czysty Markdown WYŁĄCZNIE po uprzedniej sanityzacji (DOMPurify + blokada skryptów/SVG/eventów).
+ */
 export function convertHtmlToMarkdown(html: string): string {
+  const safeHtml = stripHtmlToSafeMarkup(html);
   try {
-    return normalizeLineEndings(turndown.turndown(html));
+    return normalizeLineEndings(turndown.turndown(safeHtml));
   } catch {
-    return normalizeLineEndings(html.replace(/<[^>]+>/g, " "));
+    return normalizeLineEndings(safeHtml.replace(/<[^>]+>/g, " "));
   }
 }
 
@@ -26,10 +35,15 @@ export async function parseRawEmlBuffer(
   meta?: { uid?: number; folder?: string; seen?: boolean; flagged?: boolean }
 ): Promise<ParsedEmailMessage> {
   const rawBuffer = Buffer.isBuffer(raw) ? raw : Buffer.from(raw, "utf8");
-  const parsed = await simpleParser(rawBuffer);
+  const parsed = await simpleParser(rawBuffer, {
+    skipHtmlToText: true,
+    skipTextToHtml: true,
+    skipTextLinks: true,
+  });
 
   const fromAddr = parsed.from?.value?.[0];
   const dateObj = parsed.date || new Date();
+  const dateIso = dateObj.toISOString().slice(0, 10);
   const textBody = normalizeLineEndings(parsed.text || "");
   const htmlBody = typeof parsed.html === "string" ? parsed.html : undefined;
   const markdownBody = htmlBody ? convertHtmlToMarkdown(htmlBody) : textBody;
@@ -42,21 +56,52 @@ export async function parseRawEmlBuffer(
     ? rawRefs.split(/\s+/).filter(Boolean)
     : [];
 
+  const messageId = parsed.messageId?.trim() || undefined;
+  const inReplyTo = parsed.inReplyTo?.trim() || undefined;
+  const subject = parsed.subject || "(Bez tematu)";
+  const fromEmail = fromAddr?.address || "";
+
+  const ccRaw = Array.isArray(parsed.cc)
+    ? parsed.cc.map((c) => c.text).join(", ")
+    : parsed.cc?.text || undefined;
+
+  const replyToRaw = Array.isArray(parsed.replyTo)
+    ? parsed.replyTo.map((r) => r.text).join(", ")
+    : parsed.replyTo?.text || undefined;
+
+  const threadId = buildCanonicalThreadId({
+    references,
+    inReplyTo,
+    messageId,
+    subject,
+  });
+
+  const contentHash = computeContentHash({
+    fromEmail,
+    subject,
+    date: dateIso,
+    body: strippedMarkdownBody || markdownBody || textBody,
+  });
+
   return {
     uid: meta?.uid,
     folder: meta?.folder,
-    messageId: parsed.messageId?.trim() || undefined,
-    inReplyTo: parsed.inReplyTo?.trim() || undefined,
+    messageId,
+    inReplyTo,
     references,
-    date: dateObj.toISOString().slice(0, 10),
+    threadId,
+    contentHash,
+    date: dateIso,
     dateTimeIso: dateObj.toISOString(),
-    fromName: fromAddr?.name || fromAddr?.address || "Nieznany",
-    fromEmail: fromAddr?.address || "",
-    fromRaw: parsed.from?.text || fromAddr?.address || "",
+    fromName: fromAddr?.name || fromEmail || "Nieznany",
+    fromEmail,
+    fromRaw: parsed.from?.text || fromEmail || "",
     toRaw: Array.isArray(parsed.to)
       ? parsed.to.map((t) => t.text).join(", ")
       : parsed.to?.text || "",
-    subject: parsed.subject || "(Bez tematu)",
+    ccRaw,
+    replyToRaw,
+    subject,
     textBody,
     htmlBody,
     markdownBody,
@@ -83,7 +128,6 @@ export function groupHeadersIntoThreads(headers: ImapMessageHeader[]): EmailThre
   const subjectToRoot = new Map<string, string>();
   const groups = new Map<string, ImapMessageHeader[]>();
 
-  // Przetwarzaj od najstarszych, aby korzeń wątku był stabilny
   const chronological = [...headers].sort((a, b) => a.uid - b.uid);
 
   for (const h of chronological) {

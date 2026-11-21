@@ -39,7 +39,7 @@ export function Sidebar({
     {
       id: 'email-settings',
       label: 'Ustawienia poczty',
-      detail: 'Roundcube, Gmail i test IMAP',
+      detail: 'Roundcube, Gmail OAuth2, Outlook',
       icon: Mail,
     },
     {

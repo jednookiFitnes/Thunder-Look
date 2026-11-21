@@ -1,8 +1,10 @@
 import { App, FuzzySuggestModal, Modal, Notice, Setting, TFile } from "obsidian";
-import { VaultContactMatch } from "../types";
+import { TrinitecPluginSettings, VaultContactMatch } from "../types";
 import { SmtpService } from "../services/smtpService";
 import { ProjectMatcherService } from "../services/projectMatcherService";
 import { MruStore } from "../utils/mruStore";
+
+const UNDO_DELAY_SECONDS = 5;
 
 class ContactMruSuggestModal extends FuzzySuggestModal<VaultContactMatch> {
   private contacts: VaultContactMatch[];
@@ -55,12 +57,13 @@ class VaultFileSuggestModal extends FuzzySuggestModal<TFile> {
 }
 
 export class ComposeMailModal extends Modal {
+  private settings: TrinitecPluginSettings;
   private smtpService: SmtpService;
   private matcher: ProjectMatcherService;
   private mru: MruStore;
 
   private to: string;
-  private cc = "";
+  private cc: string;
   private bcc = "";
   private subject: string;
   private body: string;
@@ -68,13 +71,19 @@ export class ComposeMailModal extends Modal {
   private references?: string[];
   private attachedFiles: TFile[] = [];
 
+  private pendingSendCountdown = 0;
+  private countdownInterval: number | null = null;
+  private sendingNow = false;
+
   constructor(
     app: App,
+    settings: TrinitecPluginSettings,
     smtpService: SmtpService,
     matcher: ProjectMatcherService,
     mru: MruStore,
     defaults?: {
       to?: string;
+      cc?: string;
       subject?: string;
       body?: string;
       inReplyTo?: string;
@@ -82,10 +91,12 @@ export class ComposeMailModal extends Modal {
     }
   ) {
     super(app);
+    this.settings = settings;
     this.smtpService = smtpService;
     this.matcher = matcher;
     this.mru = mru;
     this.to = defaults?.to || "";
+    this.cc = defaults?.cc || "";
     this.subject = defaults?.subject || "";
     this.body = defaults?.body || "";
     this.inReplyTo = defaults?.inReplyTo;
@@ -93,16 +104,113 @@ export class ComposeMailModal extends Modal {
   }
 
   onOpen(): void {
-    this.modalEl.addClass("trinitec-mail-modal-spacious");
+    this.modalEl.addClass("tl-modal-spacious");
     this.render();
+  }
+
+  onClose(): void {
+    this.cancelPendingSend();
+    this.contentEl.empty();
+  }
+
+  private cancelPendingSend(): void {
+    if (this.countdownInterval !== null) {
+      window.clearInterval(this.countdownInterval);
+      this.countdownInterval = null;
+    }
+    this.pendingSendCountdown = 0;
+  }
+
+  private startDelayedSend(): void {
+    if (!this.to.trim() || !this.subject.trim()) {
+      new Notice("Podaj adres odbiorcy oraz temat wiadomości.");
+      return;
+    }
+
+    this.cancelPendingSend();
+    this.pendingSendCountdown = UNDO_DELAY_SECONDS;
+    this.render();
+
+    this.countdownInterval = window.setInterval(() => {
+      this.pendingSendCountdown -= 1;
+      if (this.pendingSendCountdown <= 0) {
+        this.cancelPendingSend();
+        void this.executeActualSend();
+      } else {
+        this.render();
+      }
+    }, 1000);
+  }
+
+  private async executeActualSend(): Promise<void> {
+    if (this.sendingNow) return;
+    this.sendingNow = true;
+    this.render();
+
+    try {
+      const maxBytes = Math.max(1, this.settings.maxAttachmentSizeMb || 25) * 1024 * 1024;
+      const attachments = await Promise.all(
+        this.attachedFiles.map(async (file) => {
+          if (file.stat.size > maxBytes) {
+            throw new Error(
+              `Załącznik „${file.name}” przekracza limit ${this.settings.maxAttachmentSizeMb} MB.`
+            );
+          }
+          const bin = await this.app.vault.readBinary(file);
+          return { filename: file.name, content: Buffer.from(bin) };
+        })
+      );
+
+      const res = await this.smtpService.sendEmail({
+        to: this.to,
+        cc: this.cc,
+        bcc: this.bcc,
+        subject: this.subject,
+        text: this.body,
+        inReplyTo: this.inReplyTo,
+        references: this.references,
+        attachments,
+      });
+
+      const firstEmail = this.to.split(",")[0]?.trim().toLowerCase();
+      if (firstEmail) this.mru.recordUse("contacts", firstEmail);
+
+      new Notice(
+        res.appendedToSent
+          ? `Wysłano do ${this.to} i zapisano kopię w folderze Sent.`
+          : `Wysłano do ${this.to}.`
+      );
+      this.close();
+    } catch (err) {
+      new Notice(`Błąd wysyłki SMTP: ${(err as Error).message}`);
+      this.sendingNow = false;
+      this.render();
+    }
   }
 
   private render(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h2", { text: "Nowa wiadomość e-mail (SMTP + kopia w Sent)" });
+    contentEl.createEl("h2", { text: "Nowa wiadomość e-mail (Thunder Look SMTP)" });
 
-    const scrollEl = contentEl.createDiv({ cls: "trinitec-mail-modal-scroll" });
+    if (this.pendingSendCountdown > 0) {
+      const undoBanner = contentEl.createDiv({ cls: "tl-banner-warn" });
+      undoBanner.createSpan({
+        text: `Wysyłanie wiadomości za ${this.pendingSendCountdown} s...`,
+      });
+      const undoBtn = undoBanner.createEl("button", {
+        text: "Cofnij wysyłkę",
+        type: "button",
+        cls: "mod-warning",
+      });
+      undoBtn.addEventListener("click", () => {
+        this.cancelPendingSend();
+        new Notice("Cofnięto wysyłkę wiadomości.");
+        this.render();
+      });
+    }
+
+    const scrollEl = contentEl.createDiv({ cls: "tl-modal-scroll" });
 
     new Setting(scrollEl)
       .setName("Do (odbiorca)")
@@ -110,7 +218,7 @@ export class ComposeMailModal extends Modal {
         t.setValue(this.to)
           .setPlaceholder("odbiorca@firma.pl")
           .onChange((v) => (this.to = v.trim()));
-        t.inputEl.style.width = "100%";
+        t.inputEl.addClass("tl-full-width");
       })
       .addButton((btn) =>
         btn.setButtonText("Z kontaktów (MRU)").onClick(() => {
@@ -130,25 +238,25 @@ export class ComposeMailModal extends Modal {
 
     new Setting(scrollEl).setName("DW (CC)").addText((t) => {
       t.setValue(this.cc).onChange((v) => (this.cc = v.trim()));
-      t.inputEl.style.width = "100%";
+      t.inputEl.addClass("tl-full-width");
     });
 
     new Setting(scrollEl).setName("UDW (BCC)").addText((t) => {
       t.setValue(this.bcc).onChange((v) => (this.bcc = v.trim()));
-      t.inputEl.style.width = "100%";
+      t.inputEl.addClass("tl-full-width");
     });
 
     new Setting(scrollEl).setName("Temat").addText((t) => {
       t.setValue(this.subject)
         .setPlaceholder("[26-125] Temat wiadomości")
         .onChange((v) => (this.subject = v));
-      t.inputEl.style.width = "100%";
+      t.inputEl.addClass("tl-full-width");
     });
 
     new Setting(scrollEl).setName("Treść wiadomości").addTextArea((ta) => {
       ta.setValue(this.body);
       ta.inputEl.rows = 10;
-      ta.inputEl.style.width = "100%";
+      ta.inputEl.addClass("tl-full-width");
       ta.onChange((v) => (this.body = v));
     });
 
@@ -176,51 +284,20 @@ export class ComposeMailModal extends Modal {
         })
       );
 
-    const footer = contentEl.createDiv({ cls: "trinitec-mail-modal-footer" });
-    const cancelBtn = footer.createEl("button", { text: "Anuluj" });
-    cancelBtn.onclick = () => this.close();
+    const footer = contentEl.createDiv({ cls: "tl-modal-footer" });
+    const cancelBtn = footer.createEl("button", { text: "Anuluj", type: "button" });
+    cancelBtn.addEventListener("click", () => this.close());
 
-    const sendBtn = footer.createEl("button", { text: "Wyślij wiadomość", cls: "mod-cta" });
-    sendBtn.onclick = async () => {
-      if (!this.to || !this.subject) {
-        new Notice("Podaj adres odbiorcy oraz temat wiadomości.");
-        return;
-      }
-      sendBtn.setAttr("disabled", "true");
-      sendBtn.setText("Wysyłanie...");
-      try {
-        const attachments = await Promise.all(
-          this.attachedFiles.map(async (file) => {
-            const bin = await this.app.vault.readBinary(file);
-            return { filename: file.name, content: Buffer.from(bin) };
-          })
-        );
-
-        const res = await this.smtpService.sendEmail({
-          to: this.to,
-          cc: this.cc,
-          bcc: this.bcc,
-          subject: this.subject,
-          text: this.body,
-          inReplyTo: this.inReplyTo,
-          references: this.references,
-          attachments,
-        });
-
-        const firstEmail = this.to.split(",")[0]?.trim().toLowerCase();
-        if (firstEmail) this.mru.recordUse("contacts", firstEmail);
-
-        new Notice(
-          res.appendedToSent
-            ? `Wysłano do ${this.to} i zapisano kopię w folderze Sent.`
-            : `Wysłano do ${this.to}.`
-        );
-        this.close();
-      } catch (err) {
-        new Notice(`Błąd wysyłki SMTP: ${(err as Error).message}`);
-        sendBtn.removeAttribute("disabled");
-        sendBtn.setText("Wyślij wiadomość");
-      }
-    };
+    const sendBtn = footer.createEl("button", {
+      text: this.sendingNow
+        ? "Wysyłanie..."
+        : this.pendingSendCountdown > 0
+        ? `Wysyłanie za ${this.pendingSendCountdown} s...`
+        : "Wyślij wiadomość (5 s na cofnięcie)",
+      type: "button",
+      cls: "mod-cta",
+    });
+    sendBtn.disabled = this.sendingNow || this.pendingSendCountdown > 0;
+    sendBtn.addEventListener("click", () => this.startDelayedSend());
   }
 }

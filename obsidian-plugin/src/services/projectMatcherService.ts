@@ -1,15 +1,21 @@
 import { App, TFile, TFolder, normalizePath } from "obsidian";
 import {
+  assertSafeRelativeVaultPath,
+  isCloudLockFile,
+  sanitizeFilename,
+} from "../../../shared/pathSecurity";
+import {
   ParsedEmailMessage,
   TrinitecPluginSettings,
   VaultContactMatch,
   VaultProjectMatch,
 } from "../types";
 import { MruStore } from "../utils/mruStore";
-import { naturalCompare, sanitizeFilename } from "../utils/textUtils";
+import { naturalCompare } from "../utils/textUtils";
 
 /**
- * Dopasowanie projektów, kontaktów oraz wykrywanie duplikatów (message_id)
+ * Dopasowanie projektów, kontaktów, wykrywanie duplikatów (message_id / content_hash)
+ * oraz powiązanych notatek w wątku (thread_id / in_reply_to / references)
  * WYŁĄCZNIE przez app.metadataCache (zgodnie z AGENTS.md — brak odczytu plików z dysku w pętli).
  */
 export class ProjectMatcherService {
@@ -37,6 +43,7 @@ export class ProjectMatcherService {
 
     for (const child of rootFolder.children) {
       if (!(child instanceof TFolder)) continue;
+      if (isCloudLockFile(child.name)) continue;
       if (child.name.toLowerCase() === "kontakty") continue;
 
       const codeMatch = child.name.match(regex);
@@ -65,7 +72,7 @@ export class ProjectMatcherService {
     const contactsRoot = normalizePath(this.settings.contactsDir);
     const files = this.app.vault
       .getMarkdownFiles()
-      .filter((f) => f.path.startsWith(`${contactsRoot}/`));
+      .filter((f) => !isCloudLockFile(f.name) && f.path.startsWith(`${contactsRoot}/`));
 
     const contacts: VaultContactMatch[] = [];
     for (const file of files) {
@@ -113,29 +120,84 @@ export class ProjectMatcherService {
   }
 
   /**
-   * Deduplikacja po nagłówku Message-ID przez app.metadataCache.
-   * Zapobiega przypadkowemu utworzeniu dwóch notatek dla tego samego maila.
+   * Deduplikacja po nagłówku Message-ID lub hashu treści (content_hash) przez app.metadataCache.
    */
-  findExistingNoteByMessageId(messageId?: string): TFile | null {
-    if (!messageId) return null;
-    const target = messageId.trim().toLowerCase();
+  findExistingNoteByMessageId(messageId?: string, contentHash?: string): TFile | null {
+    const targetMsgId = messageId?.trim().toLowerCase() || "";
+    const targetHash = contentHash?.trim().toLowerCase() || "";
+    if (!targetMsgId && !targetHash) return null;
+
     for (const file of this.app.vault.getMarkdownFiles()) {
+      if (isCloudLockFile(file.name)) continue;
       const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
-      if (typeof fm?.message_id === "string" && fm.message_id.trim().toLowerCase() === target) {
+      if (!fm) continue;
+      if (
+        targetMsgId &&
+        typeof fm.message_id === "string" &&
+        fm.message_id.trim().toLowerCase() === targetMsgId
+      ) {
+        return file;
+      }
+      if (
+        targetHash &&
+        typeof fm.content_hash === "string" &&
+        fm.content_hash.trim().toLowerCase() === targetHash
+      ) {
         return file;
       }
     }
     return null;
   }
 
+  /**
+   * Wyszukuje wcześniej zapisane notatki z tego samego wątku (thread_id / in_reply_to / references).
+   */
+  findThreadRelatedNotes(email: ParsedEmailMessage, excludePath?: string): TFile[] {
+    const relatedIds = new Set<string>();
+    if (email.threadId) relatedIds.add(email.threadId.trim().toLowerCase());
+    if (email.inReplyTo) relatedIds.add(email.inReplyTo.trim().toLowerCase());
+    if (email.messageId) relatedIds.add(email.messageId.trim().toLowerCase());
+    for (const ref of email.references || []) {
+      const cleaned = ref.trim().toLowerCase();
+      if (cleaned) relatedIds.add(cleaned);
+    }
+
+    if (relatedIds.size === 0) return [];
+
+    const matches: TFile[] = [];
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (isCloudLockFile(file.name)) continue;
+      if (excludePath && file.path === excludePath) continue;
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (!fm) continue;
+
+      const fmThread = typeof fm.thread_id === "string" ? fm.thread_id.trim().toLowerCase() : "";
+      const fmMsgId = typeof fm.message_id === "string" ? fm.message_id.trim().toLowerCase() : "";
+      const fmReply =
+        typeof fm.in_reply_to === "string" ? fm.in_reply_to.trim().toLowerCase() : "";
+
+      if (
+        (fmThread && relatedIds.has(fmThread)) ||
+        (fmMsgId && relatedIds.has(fmMsgId)) ||
+        (fmReply && relatedIds.has(fmReply))
+      ) {
+        matches.push(file);
+      }
+    }
+
+    return matches.sort((a, b) => naturalCompare(a.basename, b.basename));
+  }
+
   matchEmailToVault(email: ParsedEmailMessage): {
     project: VaultProjectMatch | null;
     contact: VaultContactMatch | null;
     duplicateNote: TFile | null;
+    relatedThreadNotes: TFile[];
   } {
     const activeProjects = this.listActiveProjects(false);
     const contact = this.findContactByEmail(email.fromEmail);
-    const duplicateNote = this.findExistingNoteByMessageId(email.messageId);
+    const duplicateNote = this.findExistingNoteByMessageId(email.messageId, email.contentHash);
+    const relatedThreadNotes = this.findThreadRelatedNotes(email, duplicateNote?.path);
     const regex = this.safeRegex();
 
     // 1. Kod projektu w temacie lub treści
@@ -144,7 +206,12 @@ export class ProjectMatcherService {
     if (match) {
       const foundByCode = activeProjects.find((p) => p.projectCode === match[0]);
       if (foundByCode) {
-        return { project: { ...foundByCode, matchMethod: "regex" }, contact, duplicateNote };
+        return {
+          project: { ...foundByCode, matchMethod: "regex" },
+          contact,
+          duplicateNote,
+          relatedThreadNotes,
+        };
       }
     }
 
@@ -154,12 +221,17 @@ export class ProjectMatcherService {
         const clean = linked.replace(/^\[\[|\]\]$/g, "");
         const byMaster = activeProjects.find((p) => p.masterNoteName === clean);
         if (byMaster) {
-          return { project: { ...byMaster, matchMethod: "contact" }, contact, duplicateNote };
+          return {
+            project: { ...byMaster, matchMethod: "contact" },
+            contact,
+            duplicateNote,
+            relatedThreadNotes,
+          };
         }
       }
     }
 
-    return { project: null, contact, duplicateNote };
+    return { project: null, contact, duplicateNote, relatedThreadNotes };
   }
 
   async createContactNote(params: {
@@ -168,13 +240,18 @@ export class ProjectMatcherService {
     clientName: string;
     projectMasterNote: string | null;
   }): Promise<TFile> {
-    const contactsDir = normalizePath(this.settings.contactsDir);
-    if (!this.app.vault.getAbstractFileByPath(contactsDir)) {
-      await this.app.vault.createFolder(contactsDir);
+    const contactsDir = assertSafeRelativeVaultPath(this.settings.contactsDir);
+    let current = "";
+    for (const seg of contactsDir.split("/")) {
+      current = current ? `${current}/${seg}` : seg;
+      const norm = normalizePath(current);
+      if (!this.app.vault.getAbstractFileByPath(norm)) {
+        await this.app.vault.createFolder(norm);
+      }
     }
 
     const safeName = sanitizeFilename(params.name) || sanitizeFilename(params.email);
-    const targetPath = normalizePath(`${contactsDir}/${safeName}.md`);
+    const targetPath = assertSafeRelativeVaultPath(`${contactsDir}/${safeName}.md`);
     const existing = this.app.vault.getAbstractFileByPath(targetPath);
     if (existing instanceof TFile) return existing;
 
@@ -185,7 +262,7 @@ export class ProjectMatcherService {
       fm.client = [`[[${params.clientName}]]`];
       fm.contact_email = [params.email];
       fm.contact_phone = [];
-      fm.contact_info = "Dodano z Trinitec Mail";
+      fm.contact_info = "Dodano z Thunder Look";
       fm.contact_project_info = "";
     });
 

@@ -28,10 +28,97 @@ const nodeBuiltins = [
   ...builtins.builtinModules.map((m) => `node:${m}`),
 ];
 
+/**
+ * Odchudzenie bundla Obsidian Desktop (redukcja z 3.32 MB -> ~1.1 MB):
+ * - `@mixmark-io/domino` (546 KB): zastąpiony natywnym `window.DOMParser` dostarczanym przez Electron/Obsidian.
+ * - `pino` (75 KB): zastąpiony noop loggerem (`imapflow` uruchamiamy zawsze z `logger: false`).
+ * - `encoding-japanese` (302 KB): zastąpiony lekkim wrapperem `TextDecoder`.
+ * - `html-to-text`, `linkify-it`, `tlds`, `socks` (~750 KB): nieużywane dzięki `skipHtmlToText/skipTextToHtml/skipTextLinks` w `simpleParser` i brakowi proxy SOCKS.
+ */
+const bundleSlimmingPlugin = {
+  name: "thunder-look-slim-shims",
+  setup(build) {
+    build.onResolve({ filter: /^@mixmark-io\/domino$/ }, () => ({
+      path: "domino-shim",
+      namespace: "tl-shim",
+    }));
+    build.onResolve({ filter: /^pino$/ }, () => ({
+      path: "pino-shim",
+      namespace: "tl-shim",
+    }));
+    build.onResolve({ filter: /^encoding-japanese$/ }, () => ({
+      path: "encoding-jp-shim",
+      namespace: "tl-shim",
+    }));
+    build.onResolve({ filter: /^(html-to-text|linkify-it|tlds|socks)$/ }, (args) => ({
+      path: `noop-${args.path}`,
+      namespace: "tl-shim",
+    }));
+
+    build.onLoad({ filter: /^domino-shim$/, namespace: "tl-shim" }, () => ({
+      contents: `
+        module.exports = {
+          createDocument(html) {
+            if (typeof window !== "undefined" && typeof window.DOMParser === "function") {
+              return new window.DOMParser().parseFromString(html || "", "text/html");
+            }
+            return { body: { childNodes: [] } };
+          }
+        };
+      `,
+      loader: "js",
+    }));
+
+    build.onLoad({ filter: /^pino-shim$/, namespace: "tl-shim" }, () => ({
+      contents: `
+        const noop = () => {};
+        const logger = {
+          level: "silent",
+          trace: noop, debug: noop, info: noop, warn: noop, error: noop, fatal: noop,
+          child() { return logger; }
+        };
+        function pino() { return logger; }
+        pino.destination = () => ({ write: noop });
+        module.exports = pino;
+      `,
+      loader: "js",
+    }));
+
+    build.onLoad({ filter: /^encoding-jp-shim$/, namespace: "tl-shim" }, () => ({
+      contents: `
+        module.exports = {
+          convert(buf) {
+            try {
+              return new TextDecoder("utf-8", { fatal: false }).decode(buf);
+            } catch {
+              return Buffer.from(buf).toString("utf8");
+            }
+          }
+        };
+      `,
+      loader: "js",
+    }));
+
+    build.onLoad({ filter: /^noop-/, namespace: "tl-shim" }, () => ({
+      contents: `
+        function Noop() {
+          this.tlds = () => this;
+          this.match = () => null;
+          this.test = () => false;
+        }
+        Noop.convert = (html) => String(html || "").replace(/<[^>]+>/g, " ");
+        Noop.htmlToText = Noop.convert;
+        Noop.SocksClient = { createConnection: async () => { throw new Error("SOCKS proxy disabled"); } };
+        module.exports = Noop;
+      `,
+      loader: "js",
+    }));
+  },
+};
+
 function copyArtifactsToVault() {
   const vaultRoot = process.env.OBSIDIAN_VAULT_PATH?.trim();
   if (!vaultRoot) {
-    console.log("[copyToVault] Zmienna OBSIDIAN_VAULT_PATH nie jest ustawiona — zbudowano main.js lokalnie.");
     return;
   }
 
@@ -48,8 +135,6 @@ function copyArtifactsToVault() {
   if (!prod) {
     fs.writeFileSync(path.join(targetDir, ".hotreload"), "");
   }
-
-  console.log(`[copyToVault] Zsynchronizowano artefakty do: ${targetDir}`);
 }
 
 const copyToVaultPlugin = {
@@ -89,8 +174,10 @@ const context = await esbuild.context({
   sourcemap: prod ? false : "inline",
   minify: prod,
   treeShaking: true,
+  legalComments: "none",
+  drop: prod ? ["debugger"] : [],
   outfile: "main.js",
-  plugins: [copyToVaultPlugin],
+  plugins: [bundleSlimmingPlugin, copyToVaultPlugin],
 });
 
 if (prod) {

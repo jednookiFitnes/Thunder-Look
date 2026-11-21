@@ -30,7 +30,7 @@ export function TopBar({
         onClick={() => onSelectTab('install')}
         className="text-base font-semibold tracking-tight text-[#E6E8EF] whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B5CF6] rounded cursor-pointer"
       >
-        Trinitec Mail
+        Thunder Look
       </button>
 
       {/* Strefa 2: 4 jedno-liniowe zakładki nawigacji */}

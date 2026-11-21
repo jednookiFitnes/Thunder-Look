@@ -62,6 +62,7 @@ export function CodeExplorerView({
   const groupLabels: Record<GroupFilter, string> = {
     all: `Wszystkie (${files.length})`,
     'obsidian-plugin': `Wtyczka Obsidian (${files.filter((f) => f.group === 'obsidian-plugin').length})`,
+    shared: `Wspólny rdzeń (${files.filter((f) => f.group === 'shared').length})`,
     'mcp-cli': `Serwer MCP + CLI (${files.filter((f) => f.group === 'mcp-cli').length})`,
   };
 
@@ -95,7 +96,7 @@ export function CodeExplorerView({
       {/* Pasek filtrów */}
       <div className="px-6 py-3.5 border-b border-[#2B2E3B] bg-[#181A20] flex flex-wrap items-center justify-between gap-4 shrink-0">
         <div className="flex items-center gap-1 p-1 bg-[#141519] border border-[#2B2E3B] rounded-md">
-          {(['all', 'obsidian-plugin', 'mcp-cli'] as GroupFilter[]).map((g) => (
+          {(['all', 'obsidian-plugin', 'shared', 'mcp-cli'] as GroupFilter[]).map((g) => (
             <button
               key={g}
               type="button"

@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { BuildStatusResponse, RealSourceFile, StudioTab } from './types/generator';
+import { apiFetch } from './utils/apiClient';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { InstallDashboardView } from './components/InstallDashboardView';
@@ -38,7 +39,7 @@ export default function App() {
     setLoadingStatus(true);
     setStatusError(null);
     try {
-      const res = await fetch('/api/status');
+      const res = await apiFetch('/api/status');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as BuildStatusResponse;
       setStatus(data);
@@ -53,7 +54,7 @@ export default function App() {
     setLoadingFiles(true);
     setFilesError(null);
     try {
-      const res = await fetch('/api/files');
+      const res = await apiFetch('/api/files');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { files: RealSourceFile[] };
       setFiles(data.files);
@@ -77,7 +78,7 @@ export default function App() {
   ) => {
     setBusy(true);
     try {
-      const res = await fetch(endpoint);
+      const res = await apiFetch(endpoint);
       if (!res.ok) {
         const text = await res.text();
         throw new Error(text || `HTTP ${res.status}`);
@@ -103,9 +104,9 @@ export default function App() {
     if (downloadingReady) return;
     void triggerDownload(
       '/api/download/plugin-ready',
-      'trinitec-mail-project-manager-ready.zip',
+      'thunder-look-obsidian-plugin.zip',
       setDownloadingReady,
-      'Pobrano gotową wtyczkę Obsidian ZIP (main.js + manifest.json + styles.css + install-to-vault.ps1).'
+      'Pobrano gotową wtyczkę Thunder Look ZIP (main.js + manifest.json + styles.css + install-to-vault.ps1).'
     );
   };
 
@@ -113,9 +114,9 @@ export default function App() {
     if (downloadingFull) return;
     void triggerDownload(
       '/api/download/full-bundle',
-      'trinitec-mail-full-repo-and-mcp.zip',
+      'thunder-look-full-repo-and-mcp.zip',
       setDownloadingFull,
-      'Pobrano pełny pakiet: źródła + skompilowana wtyczka + MCP Server & CLI.'
+      'Pobrano pełny pakiet Thunder Look: źródła + shared/ + skompilowana wtyczka + MCP Server & CLI.'
     );
   };
 

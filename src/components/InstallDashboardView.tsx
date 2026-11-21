@@ -26,34 +26,34 @@ interface InstallDashboardViewProps {
 
 const BENCHMARK_FEATURES = [
   {
-    area: 'Bezpieczeństwo haseł i OneDrive',
+    area: 'Bezpieczeństwo haseł i chmury',
     implementation:
-      'Hasło poczty (roundcube.pl) zapisywane lokalnie w app.secretStorage / localStorage — nigdy nie trafia do data.json w OneDrive. Indeks maili w lokalnym IndexedDB (walidacja UIDVALIDITY).',
+      'Hasła i tokeny OAuth2 zapisywane są lokalnie przez app.secretStorage → Electron safeStorage → AES-256-GCM (per urządzenie) — nigdy nie trafiają do data.json w OneDrive/Google Drive.',
   },
   {
-    area: 'Nieinwazyjny IMAP + IDLE',
+    area: 'Nieinwazyjny IMAP + Google OAuth2',
     implementation:
-      'Otwieranie folderów przez EXAMINE (readOnly) i BODY.PEEK[] gwarantuje, że skanowanie rozmiaru i podgląd nie oznaczają maili jako przeczytanych. Odbiór na żywo przez IMAP IDLE z heartbeatem co 25 min.',
+      'Obsługa Roundcube (własna domena np. trinitec.pl), Gmail (logowanie przez przeglądarkę Google OAuth2 PKCE + Hasło aplikacji) oraz Outlook. Tryb EXAMINE / BODY.PEEK[] nie zmienia flagi nieprzeczytanych.',
   },
   {
-    area: 'Ścisły zapis Opt-in i deduplikacja',
+    area: 'Wątkowanie, Opt-in i deduplikacja',
     implementation:
-      'Brak automatycznego masowego zapisu maili. Zapisujesz wyłącznie jawnie wskazany mail, zaznaczony fragment tekstu lub wybrane załączniki (+ opcjonalna kopia .eml). Deduplikacja po nagłówku Message-ID przez metadataCache.',
+      'Zapis wyłącznie jawnie wskazanych maili, fragmentów i bezpiecznych załączników (ostrzeżenie przed .exe/.ps1 + deduplikacja SHA-256). Automatyczne wikilinki wątków po Message-ID / In-Reply-To / thread_id.',
   },
   {
-    area: 'Quote Stripping i HTML Sandbox',
+    area: 'Ochrona XSS i blokada trackerów',
     implementation:
-      'Automatyczne usuwanie cytowanych wątków i stopek (60–80% oszczędności w notatkach i kontekście AI) oraz renderowanie HTML w izolowanym iframe z blokadą zdalnych pikseli śledzących.',
+      'Renderowanie HTML wyłącznie po rygorystycznej sanityzacji (DOMPurify + shared sanitizer) w izolowanym <iframe sandbox=""> z CSP (img-src \'none\' domyślnie).',
   },
   {
     area: 'Zero kluczy API AI (MCP + CLI)',
     implementation:
-      'Skompilowany serwer MCP (stdio, 11 narzędzi Zod) oraz CLI dla Antigravity i innych desktopowych agentów AI. Domyślna polityka Read-Only (trinitec-ai-policy.json) blokuje nieautoryzowane akcje.',
+      'Skompilowany serwer MCP (stdio) oraz CLI dla agentów AI. Domyślna polityka Read-Only (ai-policy.json), izolacja Prompt Injection w tagach XML i wymagane potwierdzenie userExplicitlyConfirmed.',
   },
   {
-    area: 'Zgodność ze standardami AGENTS.md',
+    area: 'Zgodność z Obsidian Guidelines',
     implementation:
-      'Zapis CRLF-safe przez app.vault.process(), YAML przez fileManager.processFrontMatter(), prefiks CSS .trinitec-mail-*, sortowanie MRU + naturalne, modale >= 800x600 bez edycji inline w tabelach, brak detachLeavesOfType() w onunload().',
+      'Atomowe aktualizacje YAML przez app.fileManager.processFrontMatter(), zapis CRLF-safe przez app.vault.process(), prefiks CSS .tl-* ze zmiennymi motywu Obsidian, brak detachLeavesOfType() w onunload().',
   },
 ];
 
@@ -75,10 +75,10 @@ export function InstallDashboardView({
       <div className="border-b border-[#2B2E3B] pb-6 flex flex-wrap items-end justify-between gap-4">
         <div className="space-y-1.5">
           <h1 className="text-2xl font-semibold text-[#E6E8EF]">
-            Trinitec Mail &amp; Project Manager — Zbudowana wtyczka i pakiet MCP
+            Thunder Look — Zbudowana wtyczka Obsidian i pakiet MCP (autor: Piotr Świerk)
           </h1>
           <p className="text-sm text-[#9499AD] max-w-3xl">
-            Kod TypeScript wtyczki Obsidian oraz serwera MCP / CLI został napisany i skompilowany bezpośrednio na serwerze. Pobierz gotowy pakiet ZIP i wrzuć go do swojego sejfu w OneDrive bez instalowania Node.js.
+            Kod TypeScript wtyczki Obsidian (z odchudzonym bundlem produkcyjnym), wspólnej warstwy <code className="font-mono text-[#E6E8EF]">shared/</code> oraz serwera MCP / CLI został skompilowany bezpośrednio na serwerze. Pobierz gotowy pakiet ZIP i zainstaluj w swoim sejfie bez Node.js.
           </p>
         </div>
 
@@ -191,9 +191,9 @@ export function InstallDashboardView({
               <code className="font-mono text-[#E6E8EF]">install-to-vault.ps1</code> z oknem wyboru folderu sejfu oraz krótką instrukcję.
             </p>
             <div className="text-xs text-[#9499AD] font-mono bg-[#141519] border border-[#2B2E3B] rounded p-3 space-y-1">
-              <div>trinitec-mail-project-manager/main.js</div>
-              <div>trinitec-mail-project-manager/manifest.json</div>
-              <div>trinitec-mail-project-manager/styles.css</div>
+              <div>thunder-look/main.js</div>
+              <div>thunder-look/manifest.json</div>
+              <div>thunder-look/styles.css</div>
               <div>install-to-vault.ps1</div>
             </div>
           </div>
@@ -226,8 +226,8 @@ export function InstallDashboardView({
             </p>
             <div className="text-xs text-[#9499AD] font-mono bg-[#141519] border border-[#2B2E3B] rounded p-3 space-y-1">
               <div>obsidian-plugin/ (src/*.ts + main.js + scripts/)</div>
-              <div>mcp-cli/ (src/*.ts + dist/mcpServer.js + dist/cli.js)</div>
-              <div>mcp-cli/trinitec-ai-policy.json (.env.example)</div>
+              <div>shared/ (sanityzacja HTML, ścieżki, sieć, wątki)</div>
+              <div>mcp-cli/ (src/*.ts + dist/ + ai-policy.example.json)</div>
               <div>README.md</div>
             </div>
           </div>
@@ -275,15 +275,15 @@ export function InstallDashboardView({
             <div className="font-mono text-[#8B5CF6] font-semibold">KROK 02</div>
             <h3 className="text-sm font-medium text-[#E6E8EF]">Skopiuj folder lub uruchom skrypt</h3>
             <p className="text-[#9499AD] leading-relaxed">
-              Rozpakuj pobrany ZIP i skopiuj folder <code className="font-mono text-[#E6E8EF]">trinitec-mail-project-manager</code> do otwartego katalogu — <strong className="text-[#E6E8EF]">albo</strong> kliknij prawym na <code className="font-mono text-[#E6E8EF]">install-to-vault.ps1</code> → „Uruchom w PowerShell” i wskaż swój sejf w oknie Windows.
+              Rozpakuj pobrany ZIP i skopiuj folder <code className="font-mono text-[#E6E8EF]">thunder-look</code> do otwartego katalogu — <strong className="text-[#E6E8EF]">albo</strong> kliknij prawym na <code className="font-mono text-[#E6E8EF]">install-to-vault.ps1</code> → „Uruchom w PowerShell” i wskaż swój sejf w oknie Windows.
             </p>
           </li>
 
           <li className="space-y-2">
             <div className="font-mono text-[#8B5CF6] font-semibold">KROK 03</div>
-            <h3 className="text-sm font-medium text-[#E6E8EF]">Odśwież, włącz i podaj dane IMAP</h3>
+            <h3 className="text-sm font-medium text-[#E6E8EF]">Odśwież, włącz i połącz skrzynkę</h3>
             <p className="text-[#9499AD] leading-relaxed">
-              Kliknij przycisk <strong className="text-[#E6E8EF]">Odśwież</strong> na liście wtyczek, włącz <strong className="text-[#E6E8EF]">Trinitec Mail &amp; Project Manager</strong> i w zakładce ustawień wtyczki wpisz dane serwera <code className="font-mono text-[#E6E8EF]">roundcube.pl</code>. Hasło pozostanie wyłącznie lokalnie poza chmurą OneDrive.
+              Kliknij przycisk <strong className="text-[#E6E8EF]">Odśwież</strong> na liście wtyczek, włącz <strong className="text-[#E6E8EF]">Thunder Look</strong> i w zakładce ustawień wtyczki wybierz preset (Roundcube np. <code className="font-mono text-[#E6E8EF]">trinitec.pl</code>, Gmail OAuth2/App Password lub Outlook) i uruchom „Przetestuj pełną konfigurację”.
             </p>
           </li>
         </ol>

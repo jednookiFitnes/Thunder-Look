@@ -7,6 +7,16 @@ import {
   SimulatorConfig,
 } from '../types/generator';
 import { EXISTING_VAULT_MESSAGE_IDS } from '../data/defaults';
+import {
+  formatBytes,
+  formatPolishDate,
+  sanitizeFilename,
+  sanitizeEmailHtml,
+  stripQuotesAndSignaturesDetailed as stripQuotesAndSignatures,
+  isDangerousAttachmentExtension as isDangerousAttachmentFilename,
+} from '../../shared/index';
+
+export { formatBytes, formatPolishDate, sanitizeFilename, stripQuotesAndSignatures, isDangerousAttachmentFilename };
 
 export interface ExtractedTaskPreview {
   text: string;
@@ -15,17 +25,11 @@ export interface ExtractedTaskPreview {
   markdownLine: string;
 }
 
-export interface QuoteStripStats {
-  cleaned: string;
-  originalLength: number;
-  cleanedLength: number;
-  savedChars: number;
-  savedPercent: number;
-}
-
 export interface SanitizedHtmlResult {
   html: string;
+  bodyHtml: string;
   blockedRemoteImages: number;
+  cspHeader: string;
 }
 
 export interface SimulationOutput {
@@ -40,84 +44,23 @@ export interface SimulationOutput {
   attachmentTargetPaths: string[];
   emlTargetPath: string | null;
   extractedTasks: ExtractedTaskPreview[];
-  quoteStripStats: QuoteStripStats;
+  quoteStripStats: ReturnType<typeof stripQuotesAndSignatures>;
   sanitizedHtml: SanitizedHtmlResult;
   markdownPreview: string;
   newContactPreview: string | null;
 }
 
-export function sanitizeFilename(name: string): string {
-  return name
-    .replace(/[\\/:*?"<>|]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 96);
-}
-
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const val = bytes / Math.pow(1024, idx);
-  return `${val >= 100 ? val.toFixed(0) : val.toFixed(1)} ${units[idx]}`;
-}
-
-export function formatPolishDate(isoDate: string): string {
-  const parts = isoDate.split('-');
-  if (parts.length !== 3) return isoDate;
-  return `${parts[2]}.${parts[1]}.${parts[0]}`;
-}
-
-export function stripQuotesAndSignatures(text: string): QuoteStripStats {
-  const originalLength = text.length;
-  const lines = text.replace(/\r\n/g, '\n').split('\n');
-  const out: string[] = [];
-
-  const quoteMarkers = [
-    /^On\s.+wrote:\s*$/i,
-    /^W\s+dniu\s.+napisał(?:\(a\))?:\s*$/i,
-    /^Dnia\s.+napisał(?:\(a\))?:\s*$/i,
-    /^-{2,}\s*Original Message\s*-{2,}$/i,
-  ];
-  const sigMarkers = [
-    /^--\s*$/,
-    /^Pozdrawiam(?: serdecznie)?,?\s*$/i,
-    /^Z poważaniem,?\s*$/i,
-    /^Best regards,?\s*$/i,
-  ];
-
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
-    if (trimmed.startsWith('>')) continue;
-    if (quoteMarkers.some((rx) => rx.test(trimmed))) break;
-    if (i > 2 && sigMarkers.some((rx) => rx.test(trimmed))) break;
-    out.push(lines[i]);
-  }
-
-  const cleaned = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  const cleanedLength = cleaned.length;
-  const savedChars = Math.max(0, originalLength - cleanedLength);
-  const savedPercent =
-    originalLength > 0 ? Math.round((savedChars / originalLength) * 100) : 0;
-
-  return { cleaned, originalLength, cleanedLength, savedChars, savedPercent };
-}
-
 export function sanitizeHtmlForPreview(rawHtml: string, blockRemoteImages: boolean): SanitizedHtmlResult {
-  let blockedRemoteImages = 0;
-  let safe = rawHtml
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/\son\w+="[^"]*"/gi, '');
-
-  if (blockRemoteImages) {
-    safe = safe.replace(/<img\b[^>]*src=["'](https?:\/\/[^"']+)["'][^>]*>/gi, (_match, url: string) => {
-      blockedRemoteImages++;
-      const shortUrl = url.length > 52 ? `${url.slice(0, 52)}...` : url;
-      return `<div style="padding:6px 10px;margin:8px 0;border:1px dashed #393D4F;border-radius:4px;font-family:monospace;font-size:11px;color:#9499AD;background:#141519;">[Zablokowano zdalny obraz / piksel śledzący: ${shortUrl}]</div>`;
-    });
-  }
-
-  return { html: safe, blockedRemoteImages };
+  const res = sanitizeEmailHtml(rawHtml, {
+    blockRemoteImages,
+    darkMode: true,
+  });
+  return {
+    html: res.html,
+    bodyHtml: res.bodyHtml,
+    blockedRemoteImages: res.blockedRemoteImagesCount,
+    cspHeader: res.cspHeader,
+  };
 }
 
 export function detectProjectAndContact(
@@ -304,7 +247,7 @@ export function buildSimulationOutput(params: {
     selectedAttachments.includes(a.filename)
   );
   const attachmentTargetPaths = activeAttachments.map(
-    (a) => `${attachmentBaseDir}/${a.filename}`
+    (a) => `${attachmentBaseDir}/${sanitizeFilename(a.filename)}`
   );
 
   const sanitizedSubject = sanitizeFilename(email.subject);
@@ -323,7 +266,9 @@ export function buildSimulationOutput(params: {
   const datePl = formatPolishDate(email.date);
   const attachmentEmbeds =
     activeAttachments.length > 0
-      ? `\n\n## Załączniki\n${activeAttachments.map((a) => `- ![[${a.filename}]]`).join('\n')}`
+      ? `\n\n## Załączniki\n${activeAttachments
+          .map((a) => `- ![[${sanitizeFilename(a.filename)}]]`)
+          .join('\n')}`
       : '';
 
   const tasksSection =
@@ -338,7 +283,9 @@ export function buildSimulationOutput(params: {
       : `index: []`;
     const attachmentsYaml =
       activeAttachments.length > 0
-        ? `attachments:\n${activeAttachments.map((a) => `  - "[[${a.filename}]]"`).join('\n')}`
+        ? `attachments:\n${activeAttachments
+            .map((a) => `  - "[[${sanitizeFilename(a.filename)}]]"`)
+            .join('\n')}`
         : `attachments: []`;
     const emlYaml = emlTargetPath ? `\neml_source: "[[${emlFileName}]]"` : '';
 
@@ -346,6 +293,7 @@ export function buildSimulationOutput(params: {
 ${indexBlock}
 date: ${email.date}
 message_id: "${email.messageId}"
+thread_id: "${email.messageId}"
 electrical_topic:
   - ${config.defaultElectricalTopic}
 ai_category: ${category}
@@ -379,7 +327,7 @@ ${bodySource}${attachmentEmbeds}${tasksSection}
     const guessedClient = email.fromEmail.split('@')[1]?.split('.')[0] || 'Klient';
     const clientCap = guessedClient.charAt(0).toUpperCase() + guessedClient.slice(1);
     const projectIndexLine = project ? `\n  - "[[${project.masterNote}]]"` : '';
-    newContactPreview = `# Ścieżka: ${config.contactsDir}/${email.fromName}.md
+    newContactPreview = `# Ścieżka: ${config.contactsDir}/${sanitizeFilename(email.fromName)}.md
 ---
 index:${projectIndexLine || ' []'}
 contact_name: ${email.fromName}

@@ -2,7 +2,7 @@ import { App, Modal, Notice, Setting, TFile } from "obsidian";
 import { processLinesCrlfSafe } from "../utils/textUtils";
 
 /**
- * Modal edycji parametrów bloku kodu ```trinitec-mail``` — zawsze dostępny
+ * Modal edycji parametrów bloku kodu ```thunder-look``` / ```trinitec-mail``` — zawsze dostępny
  * nawet w przypadku błędnej składni bloku (AGENTS.md Error Resilience).
  */
 export class EditCodeBlockModal extends Modal {
@@ -28,26 +28,29 @@ export class EditCodeBlockModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h2", { text: "Edytuj blok kodu trinitec-mail" });
+    contentEl.createEl("h2", { text: "Edytuj blok kodu Thunder Look" });
     contentEl.createDiv({
-      cls: "trinitec-mail-status-text",
-      text: "Dozwolone parametry: project (np. 26-125), topic (domyślnie Korespondencja), limit (np. 15).",
+      cls: "tl-status-text",
+      text: "Dozwolone parametry: project (np. 26-125), topic (domyślnie Korespondencja), limit (1-200).",
     });
 
     new Setting(contentEl).setName("Konfiguracja bloku").addTextArea((ta) => {
       ta.setValue(this.content);
       ta.inputEl.rows = 6;
-      ta.inputEl.style.width = "100%";
-      ta.inputEl.style.fontFamily = "var(--font-monospace)";
+      ta.inputEl.addClass("tl-full-width", "tl-mono");
       ta.onChange((v) => (this.content = v));
     });
 
-    const footer = contentEl.createDiv({ cls: "trinitec-mail-modal-footer" });
-    const cancelBtn = footer.createEl("button", { text: "Anuluj" });
-    cancelBtn.onclick = () => this.close();
+    const footer = contentEl.createDiv({ cls: "tl-modal-footer" });
+    const cancelBtn = footer.createEl("button", { text: "Anuluj", type: "button" });
+    cancelBtn.addEventListener("click", () => this.close());
 
-    const saveBtn = footer.createEl("button", { text: "Zapisz blok", cls: "mod-cta" });
-    saveBtn.onclick = async () => {
+    const saveBtn = footer.createEl("button", {
+      text: "Zapisz blok",
+      type: "button",
+      cls: "mod-cta",
+    });
+    saveBtn.addEventListener("click", async () => {
       try {
         await this.app.vault.process(this.file, (data) =>
           processLinesCrlfSafe(data, (lines) => {
@@ -57,11 +60,15 @@ export class EditCodeBlockModal extends Modal {
             return [...before, ...innerLines, ...after];
           })
         );
-        new Notice("Zaktualizowano blok trinitec-mail.");
+        new Notice("Zaktualizowano blok kodu Thunder Look.");
         this.close();
       } catch (err) {
         new Notice(`Nie udało się zapisać bloku: ${(err as Error).message}`);
       }
-    };
+    });
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
   }
 }

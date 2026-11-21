@@ -1,8 +1,12 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { App, Notice, TFile, normalizePath } from "obsidian";
+import { assertSafeRelativeVaultPath } from "../../../shared/pathSecurity";
+import { validateSafeRegexPattern } from "../../../shared/networkSecurity";
+import { wrapUntrustedEmailForAi } from "../../../shared/promptSecurity";
 import {
   AiAnalysisProposal,
+  AiCategoryConfig,
   ParsedEmailMessage,
   TaskPriority,
   TrinitecPluginSettings,
@@ -12,9 +16,31 @@ import { ImapService } from "./imapService";
 
 const execFileAsync = promisify(execFile);
 
+export function doesCategoryRuleMatch(
+  rule: AiCategoryConfig,
+  subject: string,
+  body = ""
+): boolean {
+  const haystack = `${subject}\n${body}`.toLowerCase();
+  if (rule.keywords.some((kw) => kw.trim().length > 0 && haystack.includes(kw.trim().toLowerCase()))) {
+    return true;
+  }
+  if (rule.regexPattern && rule.regexPattern.trim().length > 0) {
+    const check = validateSafeRegexPattern(rule.regexPattern);
+    if (check.ok) {
+      try {
+        return new RegExp(rule.regexPattern.trim(), "i").test(`${subject}\n${body}`);
+      } catch {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Moduł integracji z zewnętrznymi agentami AI (MCP / CLI — zero kluczy API).
- * Szanuje konfigurację aktywnych analiz oraz tryb Sugeruj vs Automatycznie.
+ * Szanuje konfigurację aktywnych analiz, tryb Sugeruj vs Automatycznie oraz izolację Prompt Injection.
  */
 export class AiBridgeService {
   private app: App;
@@ -38,7 +64,7 @@ export class AiBridgeService {
 
     if (this.settings.aiCategorizationEnabled) {
       for (const rule of this.settings.aiCategories) {
-        if (rule.keywords.some((kw) => kw && haystack.includes(kw.toLowerCase()))) {
+        if (doesCategoryRuleMatch(rule, subject, body)) {
           category = rule.label;
           suggestedImapFolder = rule.imapFolder;
           suggestedVaultTopic = rule.vaultTopic;
@@ -68,6 +94,22 @@ export class AiBridgeService {
       extractedTasks,
       rationale: `Kategoria: ${category} | Priorytet: ${priority} | Zadania: ${extractedTasks.length}`,
     };
+  }
+
+  buildPromptSafeEmailContext(email: ParsedEmailMessage): {
+    securityNotice: string;
+    isolatedXml: string;
+  } {
+    return wrapUntrustedEmailForAi({
+      uid: email.uid,
+      folder: email.folder,
+      from: email.fromRaw,
+      to: email.toRaw,
+      date: email.date,
+      subject: email.subject,
+      body: email.strippedMarkdownBody || email.textBody,
+      attachments: email.attachments.map((a) => a.filename),
+    });
   }
 
   async applyAnalysisToMarkdownNote(file: TFile, proposal: AiAnalysisProposal): Promise<void> {
@@ -130,22 +172,31 @@ export class AiBridgeService {
   }
 
   async moveNoteToObsidianFolder(file: TFile, targetFolderPath: string): Promise<void> {
-    const normalizedFolder = normalizePath(targetFolderPath);
-    if (!this.app.vault.getAbstractFileByPath(normalizedFolder)) {
-      await this.app.vault.createFolder(normalizedFolder);
+    const safeFolder = assertSafeRelativeVaultPath(targetFolderPath);
+    let current = "";
+    for (const seg of safeFolder.split("/")) {
+      current = current ? `${current}/${seg}` : seg;
+      const norm = normalizePath(current);
+      if (!this.app.vault.getAbstractFileByPath(norm)) {
+        await this.app.vault.createFolder(norm);
+      }
     }
-    const targetPath = normalizePath(`${normalizedFolder}/${file.name}`);
+    const targetPath = assertSafeRelativeVaultPath(`${safeFolder}/${file.name}`);
     await this.app.fileManager.renameFile(file, targetPath);
     new Notice(`Przeniesiono notatkę do: ${targetPath}`);
   }
 
   async invokeLocalCliTriage(folder = "INBOX"): Promise<string> {
-    const { stdout } = await execFileAsync(this.settings.cliExecutablePath, [
-      "triage",
-      "--folder",
-      folder,
-      "--json",
-    ]);
+    const exe = this.settings.cliExecutablePath.trim();
+    if (!exe || /[;&|`$<>]/.test(exe)) {
+      throw new Error("Niepoprawna ścieżka pliku wykonywalnego CLI (niedozwolone znaki powłoki).");
+    }
+    const safeFolder = folder.replace(/[\r\n\0]/g, "").trim() || "INBOX";
+    const { stdout } = await execFileAsync(
+      exe,
+      ["triage", "--folder", safeFolder, "--json"],
+      { timeout: 15_000, maxBuffer: 2 * 1024 * 1024, shell: false }
+    );
     return stdout;
   }
 }

@@ -1,139 +1,37 @@
 import type { AiPolicyConfig, CategoryRule, PriorityLevel } from './config.js';
+import {
+  formatBytes,
+  formatObsidianTaskLine,
+  naturalCompare,
+  priorityToEmoji,
+  processLinesCrlfSafe,
+  stripQuotesAndSignaturesDetailed,
+} from '../../shared/textUtils.js';
+import { sanitizeFilename } from '../../shared/pathSecurity.js';
+import { validateSafeRegexPattern } from '../../shared/networkSecurity.js';
 
-const naturalCollator = new Intl.Collator('pl', { numeric: true, sensitivity: 'base' });
+export {
+  formatBytes,
+  formatObsidianTaskLine,
+  naturalCompare,
+  priorityToEmoji,
+  processLinesCrlfSafe,
+  sanitizeFilename,
+};
 
-export function naturalCompare(a: string, b: string): number {
-  return naturalCollator.compare(a, b);
-}
-
-/**
- * Bezpieczne przetwarzanie linii tekstu z zachowaniem oryginalnych końców linii (CRLF vs LF).
- */
-export function processLinesCrlfSafe(
-  content: string,
-  transformer: (lines: string[]) => string[]
-): string {
-  const eol = content.includes('\r\n') ? '\r\n' : '\n';
-  const normalized = content.replace(/\r\n/g, '\n');
-  const lines = normalized.split('\n');
-  const updated = transformer(lines);
-  return updated.join(eol);
-}
-
-/**
- * Usuwa cytowane odpowiedzi (>, On ... wrote:, W dniu ... napisał(a):) i stopki po "-- ",
- * redukując rozmiar kontekstu AI i notatek Obsidian o 60-80%.
- */
 export function stripQuotesAndSignatures(text: string): {
   cleaned: string;
   originalLength: number;
   cleanedLength: number;
   savedPercent: number;
 } {
-  const originalLength = text.length;
-  const lines = text.replace(/\r\n/g, '\n').split('\n');
-  const result: string[] = [];
-
-  const quoteStartPatterns = [
-    /^On\s.+wrote:\s*$/i,
-    /^W\s+dniu\s.+napisał(?:\(a\))?:\s*$/i,
-    /^Dnia\s.+napisał(?:\(a\))?:\s*$/i,
-    /^-{2,}\s*Original Message\s*-{2,}$/i,
-    /^-{2,}\s*Wiadomość oryginalna\s*-{2,}$/i,
-    /^From:\s.+$/i,
-    /^Od:\s.+$/i,
-  ];
-
-  const signatureStartPatterns = [
-    /^--\s*$/,
-    /^Pozdrawiam(?: serdecznie)?,?\s*$/i,
-    /^Z poważaniem,?\s*$/i,
-    /^Best regards,?\s*$/i,
-    /^Kind regards,?\s*$/i,
-    /^Wysłane z (?:mojego )?(?:iPhone|iPad|Android|urządzenia)/i,
-    /^Sent from my /i,
-  ];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmed = line.trim();
-
-    if (trimmed.startsWith('>')) {
-      continue;
-    }
-
-    if (quoteStartPatterns.some((rx) => rx.test(trimmed))) {
-      break;
-    }
-
-    if (i > 2 && signatureStartPatterns.some((rx) => rx.test(trimmed))) {
-      break;
-    }
-
-    result.push(line);
-  }
-
-  const cleaned = result.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  const cleanedLength = cleaned.length;
-  const savedPercent =
-    originalLength > 0
-      ? Math.max(0, Math.round(((originalLength - cleanedLength) / originalLength) * 100))
-      : 0;
-
-  return { cleaned, originalLength, cleanedLength, savedPercent };
-}
-
-export function sanitizeFilename(name: string, maxLen = 80): string {
-  const cleaned = name
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return (cleaned || 'Bez-tematu').slice(0, maxLen).trim();
-}
-
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let idx = 0;
-  let value = bytes;
-  while (value >= 1024 && idx < units.length - 1) {
-    value /= 1024;
-    idx++;
-  }
-  return `${value.toFixed(idx === 0 ? 0 : 2)} ${units[idx]}`;
-}
-
-export function priorityToEmoji(priority: PriorityLevel): string {
-  switch (priority) {
-    case 'high':
-      return '⏫';
-    case 'medium':
-      return '🔼';
-    case 'low':
-      return '🔽';
-  }
-}
-
-export function formatObsidianTaskLine(params: {
-  description: string;
-  dueDate?: string;
-  priority?: PriorityLevel;
-  sourceNoteLink?: string;
-}): string {
-  const parts = [`- [ ] ${params.description.trim()}`];
-  if (params.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(params.dueDate)) {
-    parts.push(`📅 ${params.dueDate}`);
-  }
-  if (params.priority) {
-    parts.push(priorityToEmoji(params.priority));
-  }
-  if (params.sourceNoteLink) {
-    const link = params.sourceNoteLink.startsWith('[[')
-      ? params.sourceNoteLink
-      : `[[${params.sourceNoteLink}]]`;
-    parts.push(link);
-  }
-  return parts.join(' ');
+  const res = stripQuotesAndSignaturesDetailed(text);
+  return {
+    cleaned: res.cleaned,
+    originalLength: res.originalLength,
+    cleanedLength: res.cleanedLength,
+    savedPercent: res.savedPercent,
+  };
 }
 
 export interface HeuristicTriageResult {
@@ -152,7 +50,7 @@ export interface HeuristicTriageResult {
 
 /**
  * Lokalna analiza heurystyczna (zero API keys) — wspomaga CLI i dostarcza
- * wstępny kontekst dla agenta AI (np. Antigravity) połączonego przez MCP.
+ * wstępny kontekst dla agenta AI połączonego przez MCP.
  */
 export function runHeuristicTriage(
   subject: string,
@@ -163,12 +61,15 @@ export function runHeuristicTriage(
   const lower = combined.toLowerCase();
 
   let projectCodes: string[] = [];
-  try {
-    const rx = new RegExp(policy.projectCodeRegex || '\\b\\d{2}-\\d{3}\\b', 'g');
-    const matches = combined.match(rx) || [];
-    projectCodes = Array.from(new Set(matches));
-  } catch {
-    projectCodes = [];
+  const regexStr = policy.projectCodeRegex || '\\b\\d{2}-\\d{3}\\b';
+  if (validateSafeRegexPattern(regexStr).ok) {
+    try {
+      const rx = new RegExp(regexStr, 'g');
+      const matches = combined.match(rx) || [];
+      projectCodes = Array.from(new Set(matches));
+    } catch {
+      projectCodes = [];
+    }
   }
 
   let bestCategory: CategoryRule | null = null;
@@ -180,6 +81,15 @@ export function runHeuristicTriage(
       for (const kw of cat.keywords) {
         if (kw && lower.includes(kw.toLowerCase())) {
           score += subject.toLowerCase().includes(kw.toLowerCase()) ? 3 : 1;
+        }
+      }
+      if (cat.regexPattern && validateSafeRegexPattern(cat.regexPattern).ok) {
+        try {
+          if (new RegExp(cat.regexPattern, 'i').test(combined)) {
+            score += 4;
+          }
+        } catch {
+          // ignore
         }
       }
       if (score > bestScore) {

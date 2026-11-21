@@ -1,4 +1,5 @@
 import { App, FuzzySuggestModal, Modal, Notice, Setting, TFile } from "obsidian";
+import { isDangerousAttachmentExtension } from "../../../shared/pathSecurity";
 import {
   AiAnalysisProposal,
   ParsedEmailMessage,
@@ -54,6 +55,8 @@ export class SaveEmailModal extends Modal {
   private selectedProject: VaultProjectMatch | null;
   private matchedContact: VaultContactMatch | null;
   private duplicateNote: TFile | null;
+  private relatedThreadNotes: TFile[];
+  private updateDuplicateConfirmed = false;
 
   private saveScope: SaveScopeMode;
   private selectedExcerpt: string;
@@ -87,57 +90,99 @@ export class SaveEmailModal extends Modal {
     this.selectedProject = matched.project;
     this.matchedContact = matched.contact;
     this.duplicateNote = matched.duplicateNote;
+    this.relatedThreadNotes = matched.relatedThreadNotes;
 
     this.selectedExcerpt = initialSelection.trim();
     this.saveScope = this.selectedExcerpt ? "selection" : "full";
     this.destinationMode = settings.defaultSaveMode;
-    this.selectedAttachmentNames = new Set(email.attachments.map((a) => a.filename));
+
+    // Domyślnie zaznaczaj wyłącznie bezpieczne załączniki mieszczące się w limicie rozmiaru
+    const maxBytes = Math.max(1, settings.maxAttachmentSizeMb || 25) * 1024 * 1024;
+    this.selectedAttachmentNames = new Set(
+      email.attachments
+        .filter((a) => !isDangerousAttachmentExtension(a.filename) && a.size <= maxBytes)
+        .map((a) => a.filename)
+    );
+
     this.useQuoteStrippedBody = settings.stripQuotesAndSignatures;
     this.saveRawEmlCopy = settings.saveRawEmlCopy;
 
     const baseText = this.selectedExcerpt || email.strippedMarkdownBody || email.markdownBody;
-    const tasks =
-      aiProposal?.extractedTasks.length
-        ? aiProposal.extractedTasks
-        : settings.autoDetectTasks
-        ? extractObsidianTasks(baseText)
-        : [];
+    const tasks = aiProposal?.extractedTasks.length
+      ? aiProposal.extractedTasks
+      : settings.autoDetectTasks
+      ? extractObsidianTasks(baseText)
+      : [];
     this.tasksText = tasks.join("\n");
   }
 
   onOpen(): void {
-    this.modalEl.addClass("trinitec-mail-modal-spacious");
+    this.modalEl.addClass("tl-modal-spacious");
     this.render();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
   }
 
   private render(): void {
     const { contentEl } = this;
     contentEl.empty();
 
-    contentEl.createEl("h2", { text: "Zapisz korespondencję w Praca Vault (Opt-in)" });
+    contentEl.createEl("h2", { text: "Zapisz korespondencję w Vaulcie (Opt-in)" });
     contentEl.createDiv({
-      cls: "trinitec-mail-status-text",
+      cls: "tl-status-text",
       text: `${this.email.subject} · Od: ${this.email.fromRaw} · ${this.email.date}`,
     });
 
-    const scrollEl = contentEl.createDiv({ cls: "trinitec-mail-modal-scroll" });
+    const scrollEl = contentEl.createDiv({ cls: "tl-modal-scroll" });
 
-    // Ostrzeżenie o duplikacie po nagłówku Message-ID (wykryte przez metadataCache)
+    // 1. Wykrycie duplikatu po Message-ID / content_hash
     if (this.duplicateNote) {
-      const warn = scrollEl.createDiv({ cls: "trinitec-mail-banner-warn" });
+      const warn = scrollEl.createDiv({ cls: "tl-banner-warn" });
       warn.createSpan({
-        text: `Uwaga: wiadomość o tym samym Message-ID jest już zapisana w „${this.duplicateNote.path}”.`,
+        text: this.updateDuplicateConfirmed
+          ? `Tryb aktualizacji: zostanie nadpisana istniejąca notatka „${this.duplicateNote.path}”.`
+          : `Wykryto duplikat: wiadomość istnieje już w „${this.duplicateNote.path}”.`,
       });
-      const openDupBtn = warn.createEl("button", { text: "Otwórz istniejącą" });
-      openDupBtn.onclick = async () => {
+      const dupActions = warn.createDiv({ cls: "tl-actions-row" });
+
+      const openDupBtn = dupActions.createEl("button", {
+        text: "Otwórz istniejącą",
+        type: "button",
+      });
+      openDupBtn.addEventListener("click", async () => {
         if (this.duplicateNote) {
           await this.app.workspace.getLeaf(false).openFile(this.duplicateNote);
           this.close();
         }
-      };
+      });
+
+      const updateDupBtn = dupActions.createEl("button", {
+        text: this.updateDuplicateConfirmed
+          ? "Anuluj aktualizację (utwórz kopię)"
+          : "Zaktualizuj istniejącą",
+        type: "button",
+        cls: this.updateDuplicateConfirmed ? "" : "mod-cta",
+      });
+      updateDupBtn.addEventListener("click", () => {
+        this.updateDuplicateConfirmed = !this.updateDuplicateConfirmed;
+        this.render();
+      });
     }
 
-    // Projekty posortowane MRU + naturalCompare, z zachowaniem wybranego projektu
+    // 2. Informacja o wykrytych powiązaniach w wątku
+    if (this.relatedThreadNotes.length > 0) {
+      scrollEl.createDiv({
+        cls: "tl-info-box",
+        text: `Wykryto ${this.relatedThreadNotes.length} powiązaną(e) notatkę(i) z tego samego wątku (${this.relatedThreadNotes
+          .slice(0, 3)
+          .map((f) => f.basename)
+          .join(", ")}). Zostaną automatycznie połączone wikilinkami w sekcji „## Powiązane w wątku”.`,
+      });
+    }
+
+    // 3. Projekty posortowane MRU + naturalCompare
     const projects = this.matcher.listActiveProjects(true);
     const selectedPath = this.selectedProject?.folderPath || "";
 
@@ -177,7 +222,7 @@ export class SaveEmailModal extends Modal {
       new Setting(scrollEl).setName("Fragment treści do zapisania").addTextArea((ta) => {
         ta.setValue(this.selectedExcerpt || this.email.strippedMarkdownBody.slice(0, 500));
         ta.inputEl.rows = 6;
-        ta.inputEl.style.width = "100%";
+        ta.inputEl.addClass("tl-full-width");
         ta.onChange((v) => (this.selectedExcerpt = v));
       });
     }
@@ -199,55 +244,76 @@ export class SaveEmailModal extends Modal {
         );
     }
 
-    new Setting(scrollEl)
-      .setName("Sposób zapisu w Vaulcie")
-      .addDropdown((dd) => {
-        dd.addOption("new-file", "Nowy osobny plik (Mail - RRRR-MM-DD - Temat.md)");
-        dd.addOption("append-note", "Dopisz na końcu wybranej istniejącej notatki");
-        dd.setValue(this.destinationMode);
-        dd.onChange((v) => {
-          this.destinationMode = v as SaveDestinationMode;
-          this.render();
-        });
-      });
-
-    if (this.destinationMode === "append-note") {
+    if (!this.updateDuplicateConfirmed) {
       new Setting(scrollEl)
-        .setName("Docelowa notatka (MRU)")
-        .setDesc(this.appendTargetFile ? this.appendTargetFile.path : "Nie wybrano jeszcze pliku")
-        .addButton((btn) =>
-          btn.setButtonText("Wybierz notatkę...").onClick(() => {
-            new NoteMruSuggestModal(this.app, this.mru, (file) => {
-              this.appendTargetFile = file;
-              this.render();
-            }).open();
-          })
-        );
+        .setName("Sposób zapisu w Vaulcie")
+        .addDropdown((dd) => {
+          dd.addOption("new-file", "Nowy osobny plik (Mail - RRRR-MM-DD - Temat.md)");
+          dd.addOption("append-note", "Dopisz na końcu wybranej istniejącej notatki");
+          dd.setValue(this.destinationMode);
+          dd.onChange((v) => {
+            this.destinationMode = v as SaveDestinationMode;
+            this.render();
+          });
+        });
+
+      if (this.destinationMode === "append-note") {
+        new Setting(scrollEl)
+          .setName("Docelowa notatka (MRU)")
+          .setDesc(this.appendTargetFile ? this.appendTargetFile.path : "Nie wybrano jeszcze pliku")
+          .addButton((btn) =>
+            btn.setButtonText("Wybierz notatkę...").onClick(() => {
+              new NoteMruSuggestModal(this.app, this.mru, (file) => {
+                this.appendTargetFile = file;
+                this.render();
+              }).open();
+            })
+          );
+      }
     }
 
     if (this.email.rawEmlBuffer) {
       new Setting(scrollEl)
         .setName("Dołącz źródłowy plik .eml (kopia dowodowa)")
-        .setDesc("Zapisuje oryginalny plik MIME .eml w Attachments/ i linkuje go w frontmatterze.")
+        .setDesc("Zapisuje oryginalny plik MIME .eml w Attachments/ (z deduplikacją SHA-256).")
         .addToggle((t) =>
           t.setValue(this.saveRawEmlCopy).onChange((v) => (this.saveRawEmlCopy = v))
         );
     }
 
+    // 4. Bezpieczna lista załączników z ostrzeżeniem dla plików wykonywalnych i limitem rozmiaru
     if (this.email.attachments.length > 0) {
-      scrollEl.createEl("h4", { text: "Załączniki do zapisania" });
+      const maxMb = Math.max(1, this.settings.maxAttachmentSizeMb || 25);
+      const maxBytes = maxMb * 1024 * 1024;
+      scrollEl.createEl("h4", {
+        text: `Załączniki (limit: ${maxMb} MB, deduplikacja SHA-256)`,
+      });
+
       for (const att of this.email.attachments) {
-        new Setting(scrollEl)
-          .setName(att.filename)
-          .setDesc(`${formatBytes(att.size)} · ${att.contentType}`)
-          .addToggle((t) =>
-            t
-              .setValue(this.selectedAttachmentNames.has(att.filename))
-              .onChange((checked) => {
-                if (checked) this.selectedAttachmentNames.add(att.filename);
-                else this.selectedAttachmentNames.delete(att.filename);
-              })
-          );
+        const dangerous = isDangerousAttachmentExtension(att.filename);
+        const oversized = att.size > maxBytes;
+        const descParts = [`${formatBytes(att.size)} · ${att.contentType}`];
+        if (dangerous) {
+          descParts.push("⚠ OSTRZEŻENIE: potencjalnie niebezpieczne rozszerzenie (odznaczone domyślnie)");
+        }
+        if (oversized) {
+          descParts.push(`Przekracza limit ${maxMb} MB`);
+        }
+
+        const setting = new Setting(scrollEl)
+          .setName(dangerous ? `⚠ ${att.filename}` : att.filename)
+          .setDesc(descParts.join(" · "))
+          .addToggle((t) => {
+            t.setValue(this.selectedAttachmentNames.has(att.filename));
+            if (oversized) t.setDisabled(true);
+            t.onChange((checked) => {
+              if (checked) this.selectedAttachmentNames.add(att.filename);
+              else this.selectedAttachmentNames.delete(att.filename);
+            });
+          });
+        if (dangerous) {
+          setting.settingEl.addClass("tl-attachment-danger");
+        }
       }
     }
 
@@ -266,22 +332,27 @@ export class SaveEmailModal extends Modal {
       .addTextArea((ta) => {
         ta.setValue(this.tasksText);
         ta.inputEl.rows = 4;
-        ta.inputEl.style.width = "100%";
+        ta.inputEl.addClass("tl-full-width");
         ta.onChange((v) => (this.tasksText = v));
       });
 
-    // Stała stopka z przyciskami (nigdy niezasłaniana przez rozwijane listy)
-    const footer = contentEl.createDiv({ cls: "trinitec-mail-modal-footer" });
-    const cancelBtn = footer.createEl("button", { text: "Anuluj" });
-    cancelBtn.onclick = () => this.close();
+    // Stała stopka
+    const footer = contentEl.createDiv({ cls: "tl-modal-footer" });
+    const cancelBtn = footer.createEl("button", { text: "Anuluj", type: "button" });
+    cancelBtn.addEventListener("click", () => this.close());
 
-    const saveBtn = footer.createEl("button", { text: "Zapisz w Vaulcie", cls: "mod-cta" });
-    saveBtn.onclick = async () => {
-      if (this.destinationMode === "append-note" && !this.appendTargetFile) {
+    const saveBtn = footer.createEl("button", {
+      text: this.updateDuplicateConfirmed ? "Zaktualizuj istniejącą notatkę" : "Zapisz w Vaulcie",
+      type: "button",
+      cls: "mod-cta",
+    });
+    saveBtn.addEventListener("click", async () => {
+      if (!this.updateDuplicateConfirmed && this.destinationMode === "append-note" && !this.appendTargetFile) {
         new Notice("Wybierz istniejącą notatkę docelową.");
         return;
       }
 
+      saveBtn.disabled = true;
       try {
         if (this.createMissingContact && this.email.fromEmail) {
           const domain = this.email.fromEmail.split("@")[1]?.split(".")[0] || "Klient";
@@ -305,12 +376,14 @@ export class SaveEmailModal extends Modal {
           selectedExcerpt: this.selectedExcerpt,
           destinationMode: this.destinationMode,
           appendTargetFile: this.appendTargetFile,
+          updateExistingFile: this.updateDuplicateConfirmed ? this.duplicateNote : null,
           selectedAttachmentNames: Array.from(this.selectedAttachmentNames),
           tasksMarkdown: tasks,
           useQuoteStrippedBody: this.useQuoteStrippedBody,
           saveRawEmlCopy: this.saveRawEmlCopy,
           aiCategory: this.aiProposal?.category,
           aiPriority: this.aiProposal?.priority,
+          relatedThreadNotes: this.relatedThreadNotes,
         });
 
         new Notice(`Zapisano w Vaulcie: ${targetFile.path}`);
@@ -318,7 +391,8 @@ export class SaveEmailModal extends Modal {
         this.close();
       } catch (err) {
         new Notice(`Błąd zapisu do Vaulta: ${(err as Error).message}`);
+        saveBtn.disabled = false;
       }
-    };
+    });
   }
 }

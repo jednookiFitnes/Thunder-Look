@@ -1,32 +1,56 @@
-# Trinitec Mail & Project Manager — Wtyczka Obsidian
+# Thunder Look — Wtyczka Obsidian
 
-Wtyczka desktopowa do Obsidian zaprojektowana dla sejfu inżynierskiego **Praca Vault** (obsługa IMAP/SMTP `roundcube.pl`, analiza zajętości skrzynki, ścisły zapis Opt-in do folderów projektów `11 - Notes - Trinitec Projekty/`, przeglądarka `.eml` oraz integracja z agentami AI przez MCP/CLI bez kluczy API).
+**Autor:** Piotr Świerk  
+**ID wtyczki:** `thunder-look` (`isDesktopOnly: true`)
 
-## Szybka instalacja w sejfie (np. w OneDrive) — bez kompilacji
+Desktopowa wtyczka pocztowa i menedżer projektów dla Obsidian: nieinwazyjny klient IMAP/SMTP (`EXAMINE` + `BODY.PEEK[]`), wsparcie dla **Roundcube (własny serwer/domena np. `trinitec.pl`)**, **Gmail (OAuth2 w przeglądarce + Hasło aplikacji)** oraz **Outlook / Office 365**.
 
-1. Pobierz gotowy pakiet ZIP z portalu dystrybucyjnego.
-2. W Obsidianie wejdź w **Ustawienia → Wtyczki społeczności → Zainstalowane wtyczki** i kliknij ikonę folderu (otworzy katalog `.obsidian/plugins/` Twojego sejfu).
-3. Skopiuj folder `trinitec-mail-project-manager` (zawierający `main.js`, `manifest.json`, `styles.css`) — **albo** uruchom dołączony skrypt `scripts/install-to-vault.ps1`, który zapyta Cię o folder sejfu w oknie Windows.
-4. Kliknij **Odśwież** w Obsidianie i włącz wtyczkę **Trinitec Mail & Project Manager**.
+---
 
-## Budowanie ze źródeł (opcjonalne)
+## Kluczowe funkcje
 
-W katalogu `obsidian-plugin/`:
+- **Kreator szybkiej konfiguracji i 3-etapowa diagnostyka** (IMAP + SMTP + zapisywalność folderu w sejfie).
+- **Bezpieczne przechowywanie haseł i tokenów:** `app.secretStorage` → Electron `safeStorage` → lokalne szyfrowanie AES-256-GCM (poza `data.json` i chmurą).
+- **Ścisły tryb Opt-in, wątkowanie i deduplikacja:** zapisywanie wyłącznie wskazanych maili, fragmentów lub załączników; frontmatter zawiera `message_id`, `in_reply_to`, `thread_id` i `content_hash`; automatyczne wykrywanie duplikatów i linkowanie wątków (`## Powiązane w wątku`).
+- **Bezpieczne załączniki:** ostrzeganie i domyślne odznaczanie niebezpiecznych rozszerzeń (`.exe`, `.bat`, `.ps1`, `.js`, `.msi`, `.iso` itd.), konfigurowalny limit rozmiaru oraz deduplikacja po **SHA-256**.
+- **Ochrona przed XSS i tracking pixelami:** sanityzacja DOMPurify + `<iframe sandbox="">` z domyślną blokadą zdalnych obrazów (CSP `img-src 'none'`) oraz przyciskiem ręcznego doładowania obrazów.
+- **Odpowiadanie i wysyłka:** Odpowiedz / Odpowiedz wszystkim / Przekaż dalej, konfigurowalna stopka oraz **5-sekundowe „Cofnij wysyłkę”**.
+- **Pasek statusu i tryb Offline:** licznik nieprzeczytanych + ostatnia synchronizacja + odczyt z lokalnego cache IndexedDB bez dostępu do sieci.
 
+---
+
+## Instalacja w 30 sekund
+
+### Windows (PowerShell)
 ```powershell
-# Ustawienie długich ścieżek na Windows (OneDrive)
-git config --global core.longpaths true
+.\scripts\install-to-vault.ps1
+```
+Dodatkowe parametry:
+- `.\scripts\install-to-vault.ps1 -VaultPath "C:\Sciezka\Do\Sejfu"` — instalacja bez okna wyboru folderu,
+- `.\scripts\install-to-vault.ps1 -CreateHotReload` — tworzy plik `.hotreload` do pracy developerskiej.
 
-# Instalacja zależności i budowanie
-pnpm install
-pnpm run build
+### Ręcznie (Windows / macOS / Linux)
+Skopiuj pliki `main.js`, `manifest.json` oraz `styles.css` do `<TwójSejf>/.obsidian/plugins/thunder-look/`, odśwież listę wtyczek w Obsidian i włącz **Thunder Look**.
+
+---
+
+## Kompilacja ze źródeł
+
+```bash
+npm install
+npm run typecheck
+npm run build
 ```
 
-Lub użyj `.\scripts\build.ps1` (kompiluje w lokalnym buforze `%USERPROFILE%\.obsidian-builds\`, omijając blokady synchronizacji OneDrive). Opcjonalnie ustaw zmienną środowiskową `OBSIDIAN_VAULT_PATH`, jeśli chcesz automatycznie kopiować `main.js` po buildzie.
+Na Windows z sejfem w OneDrive/Google Drive zalecany jest skrypt budujący poza chmurą:
+```powershell
+.\scripts\build.ps1
+```
 
-## Kluczowe zasady bezpieczeństwa i ergonomii
+---
 
-- **Hasło poczty** przechowywane jest wyłącznie lokalnie (`app.secretStorage` / `localStorage`), nigdy w `data.json` synchronizowanym w OneDrive.
-- **Ścisły zapis Opt-in**: wtyczka nigdy nie zapisuje automatycznie całej poczty — zapisujesz tylko jawnie wskazany mail, zaznaczony fragment tekstu lub wybrane załączniki.
-- **Nieinwazyjny IMAP (`EXAMINE` / `BODY.PEEK[]`)**: skanowanie folderów i rozmiaru skrzynki nie zmienia statusu przeczytania wiadomości.
-- **Zgodność z `AGENTS.md`**: CRLF-safe zapis przez `app.vault.process()`, aktualizacje YAML przez `app.fileManager.processFrontMatter()`, izolacja CSS `.trinitec-mail-*`, brak `detachLeavesOfType()` w `onunload()`.
+## Test dymny po instalacji w Obsidian
+
+1. Włącz wtyczkę **Thunder Look** i otwórz konsolę deweloperską (`Ctrl+Shift+I` / `Cmd+Opt+I`) — upewnij się, że brak błędów przy starcie.
+2. W **Ustawienia → Thunder Look** wybierz preset (np. Roundcube z serwerem `trinitec.pl` lub Gmail) i kliknij **Przetestuj pełną konfigurację**.
+3. Otwórz widok poczty z paska bocznego, sprawdź podgląd HTML z blokadą zdalnych obrazów oraz zapis Opt-in do projektu (`SaveEmailModal`).

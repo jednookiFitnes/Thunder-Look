@@ -1,19 +1,23 @@
 {
-  "name": "trinitec-mail-mcp-cli",
+  "name": "thunder-look-mcp-cli",
   "version": "1.0.0",
-  "description": "Zero-API-Key MCP Server (stdio) and CLI for Trinitec Mail & Obsidian Project Manager (roundcube.pl IMAP/SMTP + Praca Vault)",
+  "author": "Piotr Świerk",
+  "description": "Thunder Look MCP Server (stdio) i CLI (Roundcube / Gmail / Outlook IMAP+SMTP + Obsidian Vault, zero kluczy API AI)",
   "type": "module",
-  "main": "dist/mcpServer.js",
+  "main": "dist/mcp-cli/src/mcpServer.js",
   "bin": {
-    "trinitec-mail": "./dist/cli.js",
-    "trinitec-mail-mcp": "./dist/mcpServer.js"
+    "thunder-look": "./dist/mcp-cli/src/cli.js",
+    "thunder-look-mcp": "./dist/mcp-cli/src/mcpServer.js",
+    "trinitec-mail": "./dist/mcp-cli/src/cli.js",
+    "trinitec-mail-mcp": "./dist/mcp-cli/src/mcpServer.js"
   },
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "dev:mcp": "tsx src/mcpServer.ts",
     "dev:cli": "tsx src/cli.ts",
-    "start:mcp": "node dist/mcpServer.js",
-    "start:cli": "node dist/cli.js"
+    "start:mcp": "node dist/mcp-cli/src/mcpServer.js",
+    "start:cli": "node dist/mcp-cli/src/cli.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
