@@ -1,0 +1,6 @@
+{
+  "name": "Trinitec Mail & Project Manager — Generator Wtyczki Obsidian i MCP",
+  "description": "Studio generowania kodu wtyczki Obsidian (IMAP/SMTP Roundcube, parser maili, monitor zajętości skrzynki, zarządzanie projektami Praca Vault) oraz serwera MCP (stdio) i narzędzia CLI dla agentów AI bez kluczy API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

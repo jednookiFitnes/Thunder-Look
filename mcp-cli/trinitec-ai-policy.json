@@ -1,0 +1,95 @@
+{
+  "version": "1.0.0",
+  "description": "Polityka bezpieczeństwa i konfiguracja aktywnych analiz AI (bez kluczy API). Domyślnie tryb bezpieczny Read-Only / Dry-Run.",
+  "security": {
+    "allowImapMove": false,
+    "allowSmtpSend": false,
+    "allowVaultWrite": false,
+    "optInVaultSavingOnly": true,
+    "saveEmlCopy": false,
+    "stripQuotesForAi": true
+  },
+  "analyses": {
+    "categorization": {
+      "enabled": true,
+      "mode": "suggest"
+    },
+    "folderRouting": {
+      "enabled": true,
+      "mode": "suggest"
+    },
+    "taskExtraction": {
+      "enabled": true,
+      "mode": "suggest"
+    },
+    "prioritization": {
+      "enabled": true,
+      "mode": "suggest"
+    }
+  },
+  "projectCodeRegex": "\\b\\d{2}-\\d{3}\\b",
+  "categories": [
+    {
+      "name": "Zlecenie",
+      "imapFolder": "INBOX/Zlecenia",
+      "vaultSubfolder": "Zamówienia",
+      "defaultPriority": "high",
+      "keywords": [
+        "zamówienie",
+        "zlecenie",
+        "PO",
+        "purchase order",
+        "uruchomienie",
+        "realizacja",
+        "pilne",
+        "awaria",
+        "przestój"
+      ]
+    },
+    {
+      "name": "Pytanie",
+      "imapFolder": "INBOX/Pytania",
+      "vaultSubfolder": "",
+      "defaultPriority": "medium",
+      "keywords": [
+        "pytanie",
+        "proszę o informację",
+        "czy możemy",
+        "wyjaśnienie",
+        "schemat",
+        "dokumentacja",
+        "termin"
+      ]
+    },
+    {
+      "name": "Raport",
+      "imapFolder": "INBOX/Raporty",
+      "vaultSubfolder": "",
+      "defaultPriority": "low",
+      "keywords": [
+        "raport",
+        "protokół",
+        "podsumowanie",
+        "pomiary",
+        "testy",
+        "odbior",
+        "FAT",
+        "SAT"
+      ]
+    },
+    {
+      "name": "Oferta",
+      "imapFolder": "INBOX/Oferty",
+      "vaultSubfolder": "Zamówienia",
+      "defaultPriority": "medium",
+      "keywords": [
+        "oferta",
+        "wycena",
+        "zapytanie ofertowe",
+        "RFQ",
+        "kosztorys",
+        "kalkulacja"
+      ]
+    }
+  ]
+}

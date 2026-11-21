@@ -1,0 +1,29 @@
+{
+  "name": "trinitec-mail-project-manager",
+  "version": "1.0.0",
+  "description": "Wtyczka Obsidian: klient IMAP/SMTP (Roundcube), monitor zajętości skrzynki, świadomy zapis Opt-in i zarządzanie projektami w Praca Vault.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit && node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit",
+    "version-bump": "node scripts/version-bump.mjs"
+  },
+  "dependencies": {
+    "imapflow": "^1.0.171",
+    "mailparser": "^3.7.2",
+    "nodemailer": "^6.9.16",
+    "turndown": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/mailparser": "^3.4.4",
+    "@types/node": "^22.14.0",
+    "@types/nodemailer": "^6.4.16",
+    "@types/turndown": "^5.0.5",
+    "dotenv": "^16.4.7",
+    "esbuild": "^0.25.0",
+    "obsidian": "latest",
+    "tslib": "^2.8.1",
+    "typescript": "^5.7.3"
+  }
+}

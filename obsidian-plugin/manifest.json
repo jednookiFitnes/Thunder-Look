@@ -1,0 +1,9 @@
+{
+  "id": "trinitec-mail-project-manager",
+  "name": "Trinitec Mail & Project Manager",
+  "version": "1.0.0",
+  "minAppVersion": "1.6.0",
+  "description": "Klient poczty IMAP/SMTP (Roundcube), monitor zajętości skrzynki, świadomy zapis Opt-in do struktury Praca Vault, zarządzanie projektami oraz integracja AI przez MCP/CLI bez kluczy API.",
+  "author": "Piotr Świerk",
+  "isDesktopOnly": true
+}

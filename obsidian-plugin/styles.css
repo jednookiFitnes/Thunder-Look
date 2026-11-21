@@ -1,0 +1,445 @@
+/* Wszystkie style są ściśle izolowane prefiksem .trinitec-mail-* i oparte na natywnych zmiennych CSS Obsidiana */
+
+.trinitec-mail-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  overflow: hidden;
+}
+
+.trinitec-mail-topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  flex-shrink: 0;
+}
+
+.trinitec-mail-topbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.trinitec-mail-status-text {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Klasyczny 3-kolumnowy układ klienta poczty */
+.trinitec-mail-three-pane {
+  display: grid;
+  grid-template-columns: 200px 300px minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 960px) {
+  .trinitec-mail-three-pane {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+}
+
+.trinitec-mail-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--background-modifier-border);
+}
+
+.trinitec-mail-pane:last-child {
+  border-right: none;
+}
+
+.trinitec-mail-pane-header {
+  padding: 8px 12px;
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary-alt);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.trinitec-mail-folder-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  border-bottom: 1px solid transparent;
+}
+
+.trinitec-mail-folder-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.trinitec-mail-folder-item.is-active {
+  background: var(--background-modifier-active-hover);
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+.trinitec-mail-thread-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trinitec-mail-thread-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.trinitec-mail-thread-item.is-selected {
+  background: var(--background-modifier-active-hover);
+}
+
+.trinitec-mail-thread-item.is-unread .trinitec-mail-thread-subject {
+  font-weight: 700;
+  color: var(--text-normal);
+}
+
+.trinitec-mail-thread-subject {
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trinitec-mail-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.trinitec-mail-reader {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 18px;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.trinitec-mail-reader-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.trinitec-mail-reader-title {
+  margin: 0;
+  font-size: 1.15em;
+  line-height: 1.35;
+}
+
+.trinitec-mail-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.trinitec-mail-html-frame {
+  width: 100%;
+  min-height: 360px;
+  flex: 1;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: #ffffff;
+}
+
+.trinitec-mail-markdown-preview {
+  padding: 12px 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  white-space: pre-wrap;
+  user-select: text;
+  font-size: var(--font-ui-small);
+  line-height: 1.6;
+}
+
+.trinitec-mail-banner-warn {
+  padding: 8px 12px;
+  border: 1px solid var(--text-warning);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  color: var(--text-warning);
+  font-size: var(--font-ui-smaller);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* Monitor zajętości skrzynki IMAP */
+.trinitec-mail-quota-panel {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.trinitec-mail-quota-bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.trinitec-mail-quota-fill {
+  height: 100%;
+  background: var(--interactive-accent);
+  transition: width 180ms ease;
+}
+
+.trinitec-mail-quota-fill.is-warn {
+  background: var(--text-warning);
+}
+
+.trinitec-mail-quota-fill.is-danger {
+  background: var(--text-error);
+}
+
+.trinitec-mail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-ui-small);
+  font-variant-numeric: tabular-nums;
+}
+
+.trinitec-mail-table th,
+.trinitec-mail-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.trinitec-mail-table th {
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.trinitec-mail-table th.is-num,
+.trinitec-mail-table td.is-num {
+  text-align: right;
+  font-family: var(--font-monospace);
+}
+
+/* Przestronne modale zgodne z AGENTS.md (min 800x600, max-height 85vh, naturalny przepływ flex) */
+.modal.trinitec-mail-modal-spacious {
+  min-width: min(800px, 92vw);
+  min-height: min(600px, 82vh);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal.trinitec-mail-modal-spacious .modal-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.trinitec-mail-modal-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.trinitec-mail-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+}
+
+/* Niestandardowe menu kontekstowe z viewport clampingiem */
+.trinitec-mail-context-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 210px;
+  padding: 4px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  box-shadow: var(--shadow-s);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trinitec-mail-context-item {
+  padding: 6px 10px;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  text-align: left;
+  background: transparent;
+  border: none;
+}
+
+.trinitec-mail-context-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* Procesor bloku kodu trinitec-mail */
+.trinitec-mail-codeblock {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.trinitec-mail-codeblock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding-bottom: 8px;
+}
+
+.trinitec-mail-codeblock-error {
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+  padding: 8px 10px;
+  border: 1px solid var(--text-error);
+  border-radius: var(--radius-s);
+}
+
+/* Zakładki ustawień (Konfiguracja / AI / Jak używać) */
+.trinitec-mail-settings-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding-bottom: 8px;
+}
+
+.trinitec-mail-settings-tab-btn.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* Dedykowany komponent ustawień poczty (Roundcube.pl / Gmail / test połączenia) */
+.trinitec-mail-email-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.trinitec-mail-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.trinitec-mail-preset-btn.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.trinitec-mail-info-box {
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+
+.trinitec-mail-test-result-slot {
+  margin-top: 4px;
+}
+
+.trinitec-mail-test-result {
+  padding: 10px 12px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--font-ui-smaller);
+}
+
+.trinitec-mail-test-result.is-success {
+  border-color: var(--color-green);
+}
+
+.trinitec-mail-test-result.is-error {
+  border-color: var(--text-error);
+}
+
+.trinitec-mail-test-result-title {
+  font-weight: 600;
+  color: var(--text-normal);
+  font-variant-numeric: tabular-nums;
+}
+
+.trinitec-mail-test-result.is-error .trinitec-mail-test-result-title {
+  color: var(--text-error);
+}
+
+.trinitec-mail-test-result-line {
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+.trinitec-mail-test-result-hint {
+  color: var(--text-normal);
+  margin-top: 4px;
+  line-height: 1.45;
+}

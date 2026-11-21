@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-sans: "DM Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+:root {
+  color-scheme: dark;
+  --bg-canvas: #141519;
+  --bg-workspace: #181a20;
+  --bg-surface: #1e2028;
+  --bg-elevated: #232631;
+  --border-subtle: #2b2e3b;
+  --border-strong: #393d4f;
+  --text-primary: #e6e8ef;
+  --text-secondary: #9499ad;
+  --text-muted: #6d7285;
+  --accent-primary: #8b5cf6;
+  --accent-hover: #7c3aed;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  text-wrap: balance;
+}
+
+code, pre, .font-mono {
+  font-family: var(--font-mono);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom subtle dark scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #141519;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2b2e3b;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3f4459;
+}
